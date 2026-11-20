@@ -1,22 +1,36 @@
-<p align="right"><b>macOS</b> · <a href="https://github.com/tw93/Mole/tree/windows#readme">Windows</a> · <a href="https://github.com/tw93/Mole/tree/linux#readme">Linux</a></p>
+# Strata
 
-<div align="center">
-  <h1>Mole</h1>
-  <p><b>Mac 深度清理、应用卸载、系统优化、磁盘分析与状态监控，免费开源命令行，另有原生 Mac App</b></p>
-  <p><a href="README.md">English</a> · 中文 · <a href="README_TW.md">繁體</a> · <a href="README_JA.md">日本語</a> · <a href="README_KR.md">한국어</a> · <a href="README_DE.md">Deutsch</a> · <a href="README_FR.md">Français</a> · <a href="README_PL.md">Polski</a> · <a href="README_PT-BR.md">Português</a> · <a href="README_UA.md">Українська</a> · <a href="README_RU.md">Русский</a></p>
-  <a href="https://github.com/tw93/mole/stargazers"><img src="https://img.shields.io/github/stars/tw93/mole?style=flat-square" alt="Stars"></a>
-  <a href="https://github.com/tw93/mole/releases"><img src="https://img.shields.io/github/v/release/tw93/mole?label=version&style=flat-square" alt="Version"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL_v3-blue.svg?style=flat-square" alt="License"></a>
-  <a href="https://github.com/tw93/mole/commits"><img src="https://img.shields.io/github/commit-activity/m/tw93/mole?style=flat-square" alt="Commits"></a>
-  <a href="https://x.com/HiTw93"><img src="https://img.shields.io/badge/follow-Tw93-red?style=flat-square&logo=x" alt="Twitter"></a>
-  <a href="https://t.me/+9f9gf4ZrFSQ2OWVl"><img src="https://img.shields.io/badge/chat-Telegram-blueviolet?style=flat-square&logo=Telegram" alt="Telegram"></a>
-</div>
+[English](README.md)
+
+Strata 是一款原生 macOS 工具，可以查出哪个文件夹占空间、预览可清理的文件，也可以找出正在占用 CPU 或内存的进程。这个分支在 `native/MoleDesktop` 中实现了 SwiftUI 界面，清理和维护功能使用随应用打包的 [Mole CLI](https://github.com/tw93/Mole) 脚本。
+
+## 构建并打开 Strata
+
+在 Mac 上准备好 Python 3 和包含 macOS 26 或更新版 SDK 的 Apple 开发工具，然后在仓库根目录运行以下命令。
+
+```sh
+python3 native/MoleDesktop/build.py
+open native/MoleDesktop/build/Strata.app
+```
+
+构建还会生成 `native/MoleDesktop/build/Strata.zip`。应用支持 macOS 13 及以上版本，处理器架构与构建用的 Mac 一致。
+
+- **磁盘分析**用色块显示各目录的空间占用。点击大色块可以逐层查看里面的文件。
+- **空间清理**先生成可搜索的预览报告。确认后会执行整轮清理，符合条件的文件可能被永久删除，包括个人废纸篓中的内容。筛选报告只影响显示范围。
+- **应用**可以搜索已安装的软件并在访达中定位。**维护**可以预览 Mole 将执行的任务。
+- **状态**显示 CPU、内存和网络活动，也可以按名称或 PID 查找进程。
+
+界面支持简体中文和英语。权限设置、快捷键和报告导出见[桌面使用指南](native/MoleDesktop/README.md)。[许可证与项目归属](LICENSES.md)
+
+## 上游 Mole CLI
+
+以下是 tw93 和贡献者维护的命令行工具使用指南。下方的安装脚本和 Homebrew 命令用于安装 CLI。上游另行发布的桌面应用是 [Mole Mac](https://mole.fit/)。
+
+<p>Mole CLI 使用指南 · <a href="README.md">English</a> · 中文 · <a href="README_TW.md">繁體</a> · <a href="README_JA.md">日本語</a> · <a href="README_KR.md">한국어</a> · <a href="README_DE.md">Deutsch</a> · <a href="README_FR.md">Français</a> · <a href="README_PL.md">Polski</a> · <a href="README_PT-BR.md">Português</a> · <a href="README_UA.md">Українська</a> · <a href="README_RU.md">Русский</a></p>
 
 <p align="center">
   <img src="./docs/img/big-mole.png" alt="Mole 清理效果" width="1000" />
 </p>
-
-> 💡 这个仓库是免费开源的命令行工具（`mo`），喜欢图形界面的话可以单独下载 [Mole for Mac](https://mole.fit/)，支持删除前逐项确认、实测 800 多款软件的卸载残留、系统维护、逐层分析磁盘空间、实时状态监控，以及在支持的 Mac 上控制风扇，Windows 上对应的原生 App 是 [Mole for Windows](https://mole.fit/zh/windows)，`brew install mole` 只会安装命令行工具。
 
 ## 功能
 
@@ -514,4 +528,4 @@ Raycast 装好后要手动设置一次：
 
 ## 开源协议
 
-Mole 基于 GPL-3.0 协议开源（详见 [LICENSE](LICENSE)），任何修改与分发的版本需要保持相同的开源协议，如果你将 Mole 分叉为其他独立产品，请使用不同名称并注明出处。[Mole for Mac](https://mole.fit) 是独立的闭源 App，Mole 会长期维护下去。
+Strata 和随应用打包的 Mole CLI 均采用 GNU 通用公共许可证第 3 版（GPLv3）。[许可证全文](LICENSE) · [组件来源与商标说明](LICENSES.md)

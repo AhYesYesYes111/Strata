@@ -62,11 +62,14 @@ struct VolumeReading {
     var fraction: Double { Double(used) / Double(capacity) }
 
     static func read() -> VolumeReading? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        guard let values = try? home.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey, .volumeNameKey]),
-              let capacity = values.volumeTotalCapacity, let free = values.volumeAvailableCapacity,
-              capacity > 0, free >= 0, free <= capacity else { return nil }
-        return VolumeReading(volume: values.volumeName ?? home.path, capacity: Int64(capacity), free: Int64(free))
+        let root = URL(fileURLWithPath: "/", isDirectory: true)
+        guard let values = try? root.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey, .volumeNameKey]),
+              let capacity = values.volumeTotalCapacity, capacity > 0 else { return nil }
+        // macOS includes reclaimable space in its capacity for important usage.
+        let important = try? root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage
+        let candidates = [important, values.volumeAvailableCapacity.map { Int64($0) }]
+        guard let free = candidates.compactMap({ $0 }).first(where: { (0...Int64(capacity)).contains($0) }) else { return nil }
+        return VolumeReading(volume: values.volumeName ?? root.path, capacity: Int64(capacity), free: free)
     }
 }
 

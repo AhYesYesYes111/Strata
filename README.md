@@ -1,22 +1,36 @@
-<p align="right"><b>macOS</b> · <a href="https://github.com/tw93/Mole/tree/windows#readme">Windows</a> · <a href="https://github.com/tw93/Mole/tree/linux#readme">Linux</a></p>
+# Strata
 
-<div align="center">
-  <h1>Mole</h1>
-  <p><b>Deep clean, uninstall, optimize, analyze disk and monitor your Mac. Free open-source CLI, plus a Mac app.</b></p>
-  <p>English · <a href="README_CN.md">中文</a> · <a href="README_TW.md">繁體</a> · <a href="README_JA.md">日本語</a> · <a href="README_KR.md">한국어</a> · <a href="README_DE.md">Deutsch</a> · <a href="README_FR.md">Français</a> · <a href="README_PL.md">Polski</a> · <a href="README_PT-BR.md">Português</a> · <a href="README_UA.md">Українська</a> · <a href="README_RU.md">Русский</a></p>
-  <a href="https://github.com/tw93/mole/stargazers"><img src="https://img.shields.io/github/stars/tw93/mole?style=flat-square" alt="Stars"></a>
-  <a href="https://github.com/tw93/mole/releases"><img src="https://img.shields.io/github/v/release/tw93/mole?label=version&style=flat-square" alt="Version"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL_v3-blue.svg?style=flat-square" alt="License"></a>
-  <a href="https://github.com/tw93/mole/commits"><img src="https://img.shields.io/github/commit-activity/m/tw93/mole?style=flat-square" alt="Commits"></a>
-  <a href="https://x.com/HiTw93"><img src="https://img.shields.io/badge/follow-Tw93-red?style=flat-square&logo=x" alt="Twitter"></a>
-  <a href="https://t.me/+9f9gf4ZrFSQ2OWVl"><img src="https://img.shields.io/badge/chat-Telegram-blueviolet?style=flat-square&logo=Telegram" alt="Telegram"></a>
-</div>
+[简体中文](README_CN.md)
+
+Strata is a native macOS app for finding large folders, reviewing cleanup candidates and checking which processes are using resources. This fork builds its SwiftUI interface in `native/MoleDesktop` and bundles the cleanup and maintenance scripts from [Mole CLI](https://github.com/tw93/Mole).
+
+## Build and open Strata
+
+On a Mac with Python 3 and Apple developer tools that include the macOS 26 SDK or newer, run these commands from the repository root.
+
+```sh
+python3 native/MoleDesktop/build.py
+open native/MoleDesktop/build/Strata.app
+```
+
+The build also creates `native/MoleDesktop/build/Strata.zip`. The app runs on macOS 13 or later and targets the architecture of the Mac used to build it.
+
+- **Analyze** maps disk usage by folder. Select a large tile to see what takes up space inside.
+- **Clean** previews candidates and lets you search the report. Confirming runs the full cleanup, which can permanently remove eligible files, including items in your Trash. Filtering the report only changes what you see.
+- **Apps** finds installed applications and reveals them in Finder. **Maintain** previews the tasks Mole would run.
+- **Status** shows CPU, memory and network activity alongside a searchable process list.
+
+The interface supports English and Simplified Chinese. The app guide covers permissions, shortcuts and report export. [Strata guide (中文)](native/MoleDesktop/README.md) · [License and credits](LICENSES.md)
+
+## About the upstream Mole CLI
+
+The following guide covers the terminal tool by tw93 and contributors. The installer and Homebrew commands install the CLI. The upstream project's own desktop app is available separately as [Mole Mac](https://mole.fit/).
+
+<p>Mole CLI guides · English · <a href="README_CN.md">中文</a> · <a href="README_TW.md">繁體</a> · <a href="README_JA.md">日本語</a> · <a href="README_KR.md">한국어</a> · <a href="README_DE.md">Deutsch</a> · <a href="README_FR.md">Français</a> · <a href="README_PL.md">Polski</a> · <a href="README_PT-BR.md">Português</a> · <a href="README_UA.md">Українська</a> · <a href="README_RU.md">Русский</a></p>
 
 <p align="center">
   <img src="./docs/img/big-mole.png" alt="Mole cleanup results" width="1000" />
 </p>
-
-> 💡 This repo is the free open-source CLI (`mo`). Prefer a native app? [Mole for Mac](https://mole.fit/) is a separate download with review-before-delete cleanup, tested leftovers for 800+ apps, maintenance, disk drill-downs, live status, and fan controls on supported Macs. On Windows, the native app is [Mole for Windows](https://mole.fit/windows). `brew install mole` installs the CLI only.
 
 ## Features
 
@@ -522,4 +536,4 @@ These lovely people already did 🐱
 
 ## License
 
-Mole is open source under GPL-3.0; see [LICENSE](LICENSE). Any modified version you share must remain under the same license. If you fork Mole, please use a distinct name and credit Mole as the upstream source. [Mole for Mac](https://mole.fit) is a separate proprietary app, and Mole is here for the long run.
+Strata and the bundled Mole CLI use the GNU General Public License, version 3. [Full license](LICENSE) · [Component credits and trademark policy](LICENSES.md)

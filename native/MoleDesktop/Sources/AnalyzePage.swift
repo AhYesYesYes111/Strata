@@ -39,15 +39,19 @@ final class DiskModel: ObservableObject {
     private var work: Task<Void, Never>?
     private var request = UUID()
     private var ancestors: [DiskScanResult] = []
+    @Published private(set) var startupVolume: VolumeReading?
+    private(set) var wholeDisk = false
 
     func scan(_ url: URL) {
+        wholeDisk = url.standardizedFileURL.path == DiskScanner.startupRoot.path
+        startupVolume = wholeDisk ? VolumeReading.read() : nil
         ancestors.removeAll()
         history = []
         load(url)
     }
 
     func startIfNeeded() {
-        if location == nil { scan(FileManager.default.homeDirectoryForCurrentUser) }
+        if location == nil { scan(DiskScanner.startupRoot) }
     }
 
     func enter(_ url: URL) {
@@ -88,6 +92,7 @@ final class DiskModel: ObservableObject {
     }
 
     func refresh() {
+        if wholeDisk { startupVolume = VolumeReading.read() }
         if let location { load(location) }
     }
 
@@ -95,6 +100,7 @@ final class DiskModel: ObservableObject {
         request = UUID()
         work?.cancel()
         work = nil
+        if running, let inventory { result = inventory }
         inventory = nil
         scanningName = nil
         if running {
@@ -113,11 +119,12 @@ final class DiskModel: ObservableObject {
         failure = nil
         scanningName = nil
         running = true
+        let scanStartup = wholeDisk
         work = Task { [self] in
             do {
-                let report = try await DiskScanner.scan(url, onInventory: { snapshot in
+                let report = try await DiskScanner.scan(url, wholeDisk: scanStartup, onInventory: { snapshot in
                     Task { @MainActor in
-                        guard self.running, self.request == ticket else { return }
+                        guard self.running, self.request == ticket, snapshot.sequence > (self.inventory?.sequence ?? 0) else { return }
                         self.inventory = snapshot
                     }
                 }) { [weak self] name in
@@ -206,10 +213,19 @@ struct AnalyzePage: View {
                 VStack(spacing: 10) {
                     navigation
                     mapContent.frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if let result = model.result {
+                    if model.running {
+                        HStack(spacing: 7) {
+                            ProgressView().controlSize(.small)
+                            let pending = model.inventory?.pendingDirectories ?? 0
+                            Text(pending > 0
+                                 ? tr("正在测量 · 还剩 \(pending) 个文件夹", "Sizing · \(pending) folder" + (pending == 1 ? "" : "s") + " remaining")
+                                 : tr("正在读取目录…", "Reading folders…"))
+                            Spacer()
+                        }.font(.caption).foregroundStyle(StrataColor.muted)
+                    } else if let result = model.result {
                         HStack {
                             Image(systemName: result.isPartial ? "exclamationmark.circle" : "square.grid.2x2")
-                            Text(result.isPartial ? tr("部分结果 · 权限、扫描上限或跨卷项目可能影响总量。", "Partial results. Some items could not be measured.") : tr("面积按分配空间计算，APFS 克隆可能共享数据块。", "Tiles show allocated space. APFS clones can share blocks."))
+                            Text(model.message ?? (result.isPartial ? tr("部分结果 · 权限、扫描上限或跨卷项目可能影响总量。", "Partial results. Some items could not be measured.") : tr("面积按分配空间计算，APFS 克隆可能共享数据块。", "Tiles show allocated space. APFS clones can share blocks.")))
                             Spacer()
                             let remainder = result.entries.prefix { $0.bytes > 0 }.count - tileOffset - TileMap.pageSize
                             if remainder > 0 {
@@ -243,7 +259,7 @@ struct AnalyzePage: View {
                     .foregroundStyle(warm)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(tr("磁盘分析", "Disk usage")).font(.system(size: 21, weight: .semibold))
-                    if let result = model.result {
+                    if let result = model.result ?? model.inventory {
                         Text(tr("\(result.entries.count) 项", result.entries.count == 1 ? "1 item" : "\(result.entries.count) items") + " · " + measuredSize(result.totalBytes, partial: result.isPartial))
                             .lineLimit(1).minimumScaleFactor(0.8).monospacedDigit()
                             .font(.caption).foregroundStyle(StrataColor.muted)
@@ -252,6 +268,15 @@ struct AnalyzePage: View {
                     }
                 }
             }.padding(.top, 4)
+            if model.wholeDisk, let volume = model.startupVolume, model.location?.path == "/" {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(tr("磁盘已用", "Disk used")).font(.caption).foregroundStyle(StrataColor.muted)
+                    Text(storageSize(volume.used) + " / " + storageSize(volume.capacity))
+                        .font(.system(size: 12, weight: .medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
+                    ProgressView(value: volume.fraction).progressViewStyle(.linear).tint(warm)
+                }.help(tr("系统报告的启动磁盘占用。文件总量按可读取的目录单独测量。",
+                          "Startup disk usage reported by macOS. File totals are measured separately in readable folders."))
+            }
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(StrataColor.muted)
                 TextField(tr("搜索当前目录", "Search this folder"), text: $options.query).textFieldStyle(.plain)
@@ -348,11 +373,8 @@ struct AnalyzePage: View {
             }
             Spacer(minLength: 3)
             Menu {
+                Button(tr("整个磁盘", "Whole Disk")) { model.scan(DiskScanner.startupRoot) }
                 Button(tr("个人文件夹", "Home")) { model.scan(FileManager.default.homeDirectoryForCurrentUser) }
-                Button(tr("启动磁盘 · 数据卷", "Startup disk · Data volume")) {
-                    let data = URL(fileURLWithPath: "/System/Volumes/Data", isDirectory: true)
-                    model.scan(FileManager.default.fileExists(atPath: data.path) ? data : URL(fileURLWithPath: "/"))
-                }
                 Divider()
                 Button(tr("选择文件夹…", "Choose folder…"), action: chooseFolder)
             } label: { Label(tr("位置", "Location"), systemImage: "folder") }
@@ -381,7 +403,7 @@ struct AnalyzePage: View {
     }
 
     @ViewBuilder private var mapContent: some View {
-        if let result = model.result, result.totalBytes > 0 {
+        if let result = model.result ?? model.inventory, result.totalBytes > 0 {
             TileMap(result: result, offset: tileOffset, hovered: hovered, open: open,
                     more: { tileOffset += TileMap.pageSize }, hover: setHover)
         } else {
@@ -410,7 +432,7 @@ struct AnalyzePage: View {
     }
 
     private func folderName(_ url: URL) -> String {
-        if url.path == "/System/Volumes/Data" { return tr("启动磁盘", "Startup disk") }
+        if url.path == DiskScanner.startupRoot.path { return tr("整个磁盘", "Whole Disk") }
         if url == FileManager.default.homeDirectoryForCurrentUser { return tr("个人文件夹", "Home") }
         return url.lastPathComponent.isEmpty ? "/" : url.lastPathComponent
     }
@@ -441,7 +463,12 @@ private func measuredSize(_ bytes: Int64, partial: Bool) -> String {
 }
 
 private struct MapItem: Identifiable {
-    let id: Int
+    enum ID: Hashable {
+        case entry(URL)
+        case remainder(Int)
+    }
+    let id: ID
+    let colorIndex: Int
     let name: String
     let bytes: Int64
     let partial: Bool
@@ -451,7 +478,7 @@ private struct MapItem: Identifiable {
 private struct MapCell: Identifiable {
     let item: MapItem
     let rect: CGRect
-    var id: Int { item.id }
+    var id: MapItem.ID { item.id }
 }
 
 private struct TileMap: View {
@@ -475,11 +502,11 @@ private struct TileMap: View {
         let positive = result.entries.prefix { $0.bytes > 0 }.dropFirst(offset)
         let shown = positive.prefix(Self.pageSize)
         var tiles = shown.enumerated().map { i, entry in
-            MapItem(id: offset + i, name: entry.name, bytes: entry.bytes, partial: entry.isPartial, entry: entry)
+            MapItem(id: .entry(entry.url), colorIndex: entry.tileColorIndex ?? (offset + i), name: entry.name, bytes: entry.bytes, partial: entry.isPartial, entry: entry)
         }
         let rest = positive.dropFirst(shown.count)
         if !rest.isEmpty {
-            tiles.append(MapItem(id: offset + shown.count, name: tr("其余 \(rest.count) 项", "\(rest.count) more"),
+            tiles.append(MapItem(id: .remainder(offset), colorIndex: 0, name: tr("其余 \(rest.count) 项", "\(rest.count) more"),
                                  bytes: rest.reduce(0) { $0 + $1.bytes }, partial: rest.contains(where: \.isPartial), entry: nil))
         }
         return tiles
@@ -504,7 +531,7 @@ private struct TileMap: View {
     private func tile(_ cell: MapCell) -> some View {
         let item = cell.item
         let highlighted = item.entry != nil && hovered == item.entry?.url
-        let tileColor = item.entry == nil ? Color(red: 0.34, green: 0.34, blue: 0.34) : Self.fills[item.id % Self.fills.count]
+        let tileColor = item.entry == nil ? Color(red: 0.34, green: 0.34, blue: 0.34) : Self.fills[item.colorIndex % Self.fills.count]
         return Button {
             if let entry = item.entry { open(entry) } else { more() }
         } label: {

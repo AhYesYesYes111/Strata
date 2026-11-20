@@ -1,5 +1,4 @@
 import AppKit
-import Charts
 import Darwin
 import IOKit.ps
 import SwiftUI
@@ -8,25 +7,30 @@ import SystemConfiguration
 struct ProcessorSample {
     let ticks: (UInt32, UInt32, UInt32, UInt32)
 
-    static func read() -> Self? {
-        var info = host_cpu_load_info_data_t()
-        var count = mach_msg_type_number_t(MemoryLayout.size(ofValue: info) / MemoryLayout<integer_t>.size)
-        let capacity = Int(count)
+    static func readCores() -> [Self]? {
+        var processors: natural_t = 0
+        var buffer: processor_info_array_t?
+        var count: mach_msg_type_number_t = 0
         let host = mach_host_self()
         defer { mach_port_deallocate(mach_task_self_, host) }
-        let status = withUnsafeMutablePointer(to: &info) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: capacity) {
-                host_statistics(host, HOST_CPU_LOAD_INFO, $0, &count)
-            }
+        guard host_processor_info(host, PROCESSOR_CPU_LOAD_INFO, &processors, &buffer, &count) == KERN_SUCCESS,
+              let buffer else { return nil }
+        defer { vm_deallocate(mach_task_self_, vm_address_t(UInt(bitPattern: buffer)), vm_size_t(count) * vm_size_t(MemoryLayout<integer_t>.stride)) }
+        let stride = Int(CPU_STATE_MAX)
+        guard processors > 0, Int(count) >= Int(processors) * stride else { return nil }
+        return (0..<Int(processors)).map { index in
+            let base = buffer.advanced(by: index * stride)
+            return Self(ticks: (UInt32(bitPattern: base[Int(CPU_STATE_USER)]),
+                                UInt32(bitPattern: base[Int(CPU_STATE_SYSTEM)]),
+                                UInt32(bitPattern: base[Int(CPU_STATE_IDLE)]),
+                                UInt32(bitPattern: base[Int(CPU_STATE_NICE)])))
         }
-        guard status == KERN_SUCCESS else { return nil }
-        return Self(ticks: info.cpu_ticks)
     }
 
-    func usage(since prev: Self) -> Double? {
+    func delta(since prev: Self) -> (busy: UInt64, total: UInt64) {
         let busy = UInt64(ticks.0 &- prev.ticks.0) + UInt64(ticks.1 &- prev.ticks.1) + UInt64(ticks.3 &- prev.ticks.3)
         let total = busy + UInt64(ticks.2 &- prev.ticks.2)
-        return total > 0 ? Double(busy) / Double(total) : nil
+        return (busy, total)
     }
 }
 
@@ -54,10 +58,8 @@ struct CapacitySample {
     }
 
     static func disk() -> Self? {
-        let volume = URL(fileURLWithPath: "/")
-        let sizes = try? volume.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey])
-        guard let total = sizes?.volumeTotalCapacity, let free = sizes?.volumeAvailableCapacity, total > 0, free >= 0, free <= total else { return nil }
-        return Self(used: UInt64(total - free), total: UInt64(total))
+        guard let volume = VolumeReading.read() else { return nil }
+        return Self(used: UInt64(volume.used), total: UInt64(volume.capacity))
     }
 }
 
@@ -65,6 +67,10 @@ struct ResourceSample {
     let date: Date
     let cpu: Double?
     let memory: Double?
+    var gpu: Double?
+    var down: Double?
+    var up: Double?
+    var interface: String?
 }
 
 struct ResourceTrend {
@@ -88,21 +94,22 @@ struct ResourceTrend {
         var id: Date { date }
     }
 
-    func points(for metric: KeyPath<ResourceSample, Double?>) -> [Point] {
-        guard let latest = samples.last?.date else { return [] }
+    func points(for metric: KeyPath<ResourceSample, Double?>, upperBound: Double = 1, sameLink: Bool = false) -> [Point] {
+        guard let latest = samples.last, upperBound.isFinite, upperBound > 0 else { return [] }
         var points: [Point] = []
         var previous: Date?
         var segment = 0
-        for sample in samples {
-            guard let value = sample[keyPath: metric], value.isFinite, (0...1).contains(value) else {
+        let relevant = sameLink ? samples.suffix(from: samples.lastIndex(where: { $0.interface != latest.interface }).map { $0 + 1 } ?? 0) : samples[...]
+        for sample in relevant {
+            guard let value = sample[keyPath: metric], value.isFinite, value >= 0 else {
                 previous = nil
                 continue
             }
             if previous.map({ sample.date.timeIntervalSince($0) > Self.longestInterval }) ?? true {
                 segment += 1
             }
-            points.append(Point(date: sample.date, offset: sample.date.timeIntervalSince(latest),
-                                percent: value * 100, segment: segment))
+            points.append(Point(date: sample.date, offset: sample.date.timeIntervalSince(latest.date),
+                                percent: min(value / upperBound, 1) * 100, segment: segment))
             previous = sample.date
         }
         return points
@@ -198,7 +205,20 @@ private func chipName() -> String {
 struct StatusReadings {
     let chip = chipName()
     private let networkStore = SCDynamicStoreCreate(nil, "Strata Status" as CFString, nil, nil)
-    private var cpuCounter: ProcessorSample?
+    private var cores: [ProcessorSample]?
+    private var lastCapacity: Date?
+    private(set) var usageByCore: [Double?] = []
+    private(set) var sensors = HardwareTelemetry()
+    private(set) var diskIO: (read: Double, write: Double)?
+    private(set) var gpuWatts: Double?
+    private(set) var vitals = SystemVitals()
+    private(set) var linkType: String?
+    private(set) var signalDBm: Int?
+    var health: ResourceHealth? {
+        ResourceHealth.evaluate(cpu: cpu, memory: memory?.fraction, disk: disk?.fraction, pressure: vitals.pressure,
+                                temperature: sensors.cpuCelsius, ioBytesPerSecond: diskIO.map { $0.read + $0.write },
+                                batteryHealth: sensors.batteryHealthPercent, thermal: thermal)
+    }
     private var linkCounter: LinkCounters?
     private(set) var cpu: Double?
     private(set) var warmingUp = true
@@ -215,16 +235,42 @@ struct StatusReadings {
         let now = Date()
         let elapsed = trend.samples.last.map { now.timeIntervalSince($0.date) } ?? 0
         let continuous = elapsed > 0 && elapsed <= ResourceTrend.longestInterval
-        let current = ProcessorSample.read()
-        cpu = continuous ? cpuCounter.flatMap { current?.usage(since: $0) } : nil
-        warmingUp = current != nil && (!continuous || cpuCounter == nil)
-        cpuCounter = current
+        let current = ProcessorSample.readCores()
+        cpu = nil
+        usageByCore = []
+        if continuous, let current, let cores, current.count == cores.count {
+            let deltas = zip(current, cores).map { $0.delta(since: $1) }
+            let total = deltas.reduce(UInt64(0)) { $0 + $1.total }
+            if total > 0 { cpu = Double(deltas.reduce(UInt64(0)) { $0 + $1.busy }) / Double(total) }
+            usageByCore = deltas.map { $0.total == 0 ? nil : Double($0.busy) / Double($0.total) }
+        }
+        warmingUp = current != nil && cpu == nil
+        cores = current
+        let hardware = HardwareTelemetry.read()
+        diskIO = continuous ? hardware.diskRates(since: sensors) : nil
+        gpuWatts = continuous ? hardware.gpuPower(since: sensors) : nil
+        sensors = hardware
+        vitals = SystemVitals.read()
         let counters = LinkCounters.read(from: networkStore)
         throughput = counters?.rate(since: linkCounter, seconds: elapsed)
+        if link != counters?.name {
+            linkType = counters.flatMap { item in
+                let interfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] ?? []
+                guard let match = interfaces.first(where: { SCNetworkInterfaceGetBSDName($0) as String? == item.name }) else { return nil }
+                let kind = SCNetworkInterfaceGetInterfaceType(match) as String?
+                if kind == kSCNetworkInterfaceTypeIEEE80211 as String { return "Wi-Fi" }
+                if kind == kSCNetworkInterfaceTypeEthernet as String { return "Ethernet" }
+                return nil
+            }
+        }
         link = counters?.name
+        signalDBm = linkType == "Wi-Fi" ? LinkQuality.signalDBm(interface: link) : nil
         linkCounter = counters
         memory = CapacitySample.memory()
-        disk = CapacitySample.disk()
+        if lastCapacity.map({ now.timeIntervalSince($0) >= 30 }) ?? true {
+            disk = CapacitySample.disk()
+            lastCapacity = now
+        }
         battery = BatteryReading.read()
         var boot = timeval()
         var bootBytes = MemoryLayout.size(ofValue: boot)
@@ -234,7 +280,8 @@ struct StatusReadings {
             uptime = nil
         }
         thermal = ProcessInfo.processInfo.thermalState
-        trend.append(ResourceSample(date: now, cpu: cpu, memory: memory?.fraction))
+        trend.append(ResourceSample(date: now, cpu: cpu, memory: memory?.fraction,
+                                    gpu: sensors.gpuPercent.map { $0 / 100 }, down: throughput?.down, up: throughput?.up, interface: link))
     }
 }
 
@@ -245,13 +292,15 @@ private let sky = Color(red: 0.55, green: 0.78, blue: 0.98)
 private let lime = Color(red: 0.72, green: 0.88, blue: 0.56)
 
 private struct StatusTile<Content: View>: View {
+    @Environment(\.statusCardHeight) private var height
     let tint: Color
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         content()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(18)
+            .padding(13)
+            .frame(height: height)
             .background {
                 ZStack {
                     StrataColor.panel
@@ -275,49 +324,35 @@ private func tileLabel(_ text: String, icon: String, color: Color) -> some View 
 
 private func metricValue(_ value: String, unit: String = "") -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 4) {
-        Text(value).font(.system(size: 36, weight: .medium, design: .rounded))
-        if !unit.isEmpty { Text(unit).font(.system(size: 18, weight: .medium)).foregroundStyle(StrataColor.muted) }
+        Text(value).font(.system(size: 30, weight: .semibold, design: .rounded))
+        if !unit.isEmpty { Text(unit).font(.system(size: 15, weight: .medium)).foregroundStyle(StrataColor.muted) }
     }.monospacedDigit().lineLimit(1).minimumScaleFactor(0.62)
 }
 
 private struct MetricTrace: View {
-    @Environment(\.locale) private var locale
     let points: [ResourceTrend.Point]
     let color: Color
-    var bars = false
+    var baseline = true
+
     var body: some View {
-        let _ = locale
-        if bars {
-            Canvas { context, area in
-                let barWidth = max(1, area.width / 31 * 0.72)
-                let plotWidth = max(0, area.width - barWidth)
-                for point in points {
-                    let x = (1 + point.offset / ResourceTrend.duration) * plotWidth
-                    let height = max(1, point.percent / 100 * area.height)
-                    let bar = CGRect(x: x, y: area.height - height, width: barWidth, height: height)
-                    let path = Path(roundedRect: bar, cornerRadius: min(2, barWidth / 3))
-                    context.fill(path, with: .linearGradient(Gradient(colors: [color, color.opacity(0.38)]),
-                        startPoint: CGPoint(x: x, y: bar.minY), endPoint: CGPoint(x: x, y: bar.maxY)))
+        Canvas { context, size in
+            var path = Path()
+            var segment: Int?
+            for point in points {
+                let p = CGPoint(x: (1 + point.offset / ResourceTrend.duration) * (size.width - 2) + 1,
+                                y: (1 - point.percent / 100) * (size.height - 3) + 1.5)
+                if segment == point.segment { path.addLine(to: p) }
+                else {
+                    path.move(to: p)
+                    context.fill(Path(ellipseIn: CGRect(x: p.x - 1, y: p.y - 1, width: 2, height: 2)), with: .color(color))
                 }
-                context.fill(Path(CGRect(x: 0, y: area.height - 1, width: area.width, height: 1)),
-                             with: .color(color.opacity(0.16)))
-            }.accessibilityLabel(tr("过去 60 秒的 CPU 使用率", "CPU usage over the last 60 seconds"))
-        } else {
-            Chart(points) { point in
-                LineMark(x: .value(tr("采样时间", "Time"), point.offset), y: .value(tr("使用率", "Usage"), point.percent),
-                         series: .value(tr("采样段", "Sample segment"), point.segment))
-                    .foregroundStyle(color).lineStyle(StrokeStyle(lineWidth: 1.8, lineCap: .round))
-                PointMark(x: .value(tr("采样时间", "Time"), point.offset), y: .value(tr("使用率", "Usage"), point.percent))
-                    .foregroundStyle(color).symbolSize(7).accessibilityHidden(true)
+                segment = point.segment
             }
-            .chartXScale(domain: -ResourceTrend.duration...0)
-            .chartYScale(domain: 0...100)
-            .chartXAxis(.hidden).chartYAxis(.hidden)
-            .chartPlotStyle { plot in
-                plot.background(alignment: .bottom) { Rectangle().fill(color.opacity(0.16)).frame(height: 1) }
+            if baseline {
+                context.fill(Path(CGRect(x: 0, y: size.height - 1, width: size.width, height: 1)), with: .color(color.opacity(0.18)))
             }
-            .accessibilityLabel(tr("过去 60 秒的内存使用率", "Memory usage over the last 60 seconds"))
-        }
+            context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.65, lineCap: .round, lineJoin: .round))
+        }.accessibilityHidden(true)
     }
 }
 
@@ -379,98 +414,100 @@ private struct ChipArtwork: View {
 struct StatusBoard: View {
     @Environment(\.locale) private var locale
     let readings: StatusReadings
-    private let gap: CGFloat = 12
+    @State private var topPower: String?
+    @State private var showCores = true
 
     var body: some View {
-        let _ = locale
         GeometryReader { canvas in
             ScrollView { dashboard(size: canvas.size) }
         }
     }
 
     func dashboard(size: CGSize) -> some View {
-        let compact = size.width < 865
-        let inset: CGFloat = compact ? 18 : 25
-        let width = min(1260, max(1, size.width - inset * 2))
-        let leading = floor((width - gap * 2) * 0.40)
-        let right = width - leading - gap
-        let tile = max(1, (right - gap) / 2)
-        let height = max(366, min(468, size.height - 118))
-        return VStack(alignment: .leading, spacing: 15) {
+        let _ = locale
+        let narrow = size.width < 880
+        let inset: CGFloat = narrow ? 16 : 20
+        let width = min(1440, max(1, size.width - inset * 2))
+        let gap: CGFloat = 9
+        let height: CGFloat = size.width > 1130 ? 151 : 139
+        let unit = (width - gap * 3) / 4.32
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Text(tr("系统状态", "System status")).font(.system(size: 30, weight: .semibold))
+                Text(tr("系统状态", "System status")).font(.system(size: 23, weight: .semibold))
                 Spacer()
                 if let latest = readings.trend.samples.last {
-                    Text(tr("采样于 ", "Updated ") + latest.date.formatted(.dateTime.locale(locale).hour().minute().second()))
+                    Text(tr("更新于 ", "Updated ") + latest.date.formatted(.dateTime.locale(locale).hour().minute().second()))
                         .font(.caption.monospacedDigit()).foregroundStyle(StrataColor.muted)
                 }
             }
-            HStack(alignment: .top, spacing: gap) {
-                VStack(spacing: gap) {
-                    hardware(compact: compact).frame(height: height * 0.63)
-                    network.frame(height: height * 0.37 - gap)
-                }.frame(width: leading)
+            if narrow {
+                Grid(horizontalSpacing: gap, verticalSpacing: gap) {
+                    GridRow { overview; usage(.cpu) }
+                    GridRow { usage(.gpu); usage(.memory) }
+                    GridRow { battery; storage }
+                    GridRow { network; fan }
+                }
+            } else {
                 VStack(spacing: gap) {
                     HStack(spacing: gap) {
-                        usageCard(memory: false).frame(width: tile)
-                        usageCard(memory: true).frame(width: tile)
-                    }.frame(height: height * 0.54)
+                        overview.frame(width: unit * 1.32); usage(.cpu); usage(.gpu); usage(.memory)
+                    }
                     HStack(spacing: gap) {
-                        storage.frame(width: max(1, right * 0.55 - gap / 2))
-                        power
-                    }.frame(height: height * 0.46 - gap)
-                }.frame(width: right)
+                        battery.frame(width: unit * 1.32); storage; network; fan
+                    }
+                }
             }
-        }.frame(width: width).padding(.horizontal, inset).padding(.vertical, 21)
+            ProcessMonitorView { topPower = $0 }
+        }
+        .environment(\.statusCardHeight, height)
+        .frame(width: width).padding(.horizontal, inset).padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .top)
     }
 
-    private func hardware(compact: Bool) -> some View {
-        StatusTile(tint: jade) {
-            VStack(alignment: .leading, spacing: 4) {
-                tileLabel(tr("本机概览", "This Mac"), icon: "desktopcomputer", color: jade)
-                Spacer(minLength: 6)
-                HStack(spacing: 0) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(readings.chip).font(.system(size: compact ? 24 : 30, weight: .semibold, design: .rounded))
-                            .lineLimit(2).minimumScaleFactor(0.6).foregroundStyle(StrataColor.ink)
-                        Text(tr("\(ProcessInfo.processInfo.activeProcessorCount) 核 CPU", "\(ProcessInfo.processInfo.activeProcessorCount)-core CPU"))
-                        Text(memorySize(ProcessInfo.processInfo.physicalMemory) + tr(" 内存", " memory"))
-                    }.font(.system(size: 12)).foregroundStyle(StrataColor.muted)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    ChipArtwork().frame(width: compact ? 109 : 157, height: compact ? 96 : 121)
-                }
-                Spacer(minLength: 6)
-                Divider()
-                HStack {
-                    Text(tr("热状态", "Thermal state")).foregroundStyle(StrataColor.muted)
-                    Spacer()
-                    Text(thermalDescription).fontWeight(.medium).foregroundStyle(thermalColor)
-                }.font(.caption).padding(.top, 4)
-                HStack {
-                    Text(tr("连续运行", "Uptime")).foregroundStyle(StrataColor.muted)
-                    Spacer(); Text(uptimeDescription)
-                }.font(.caption)
+    private func caption(_ text: String) -> some View {
+        Text(text).font(.system(size: 11, weight: .regular)).foregroundStyle(StrataColor.muted)
+            .lineLimit(1).minimumScaleFactor(0.81).help(text)
+    }
+
+    private func headline(_ title: String, _ icon: String, color: Color, badge: String? = nil) -> some View {
+        HStack(spacing: 4) {
+            tileLabel(title, icon: icon, color: color).lineLimit(1)
+            Spacer(minLength: 2)
+            if let badge {
+                Text(badge).font(.system(size: 10, weight: .medium)).foregroundStyle(StrataColor.muted)
+                    .lineLimit(1).minimumScaleFactor(0.78)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 4))
             }
         }
+    }
+
+    private var overview: some View {
+        StatusTile(tint: jade) {
+            VStack(alignment: .leading, spacing: 4) {
+                headline(tr("健康", "Health"), "sun.max", color: jade, badge: readings.chip)
+                Spacer(minLength: 1)
+                HStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        metricValue(readings.health.map { String($0.score) } ?? "—", unit: readings.health?.label ?? "")
+                        caption(readings.health?.cause.label ?? tr("正在采样…", "Sampling…"))
+                    }
+                    Spacer(minLength: 0)
+                    ChipArtwork().frame(width: 61, height: 47)
+                }
+                Spacer(minLength: 1)
+                caption(tr("运行 ", "Up ") + uptimeDescription + " · " + thermalDescription)
+            }
+        }.help(tr("根据 CPU、内存、磁盘和可用传感器估算，满分 100。", "Resource score out of 100, based on CPU, memory, storage and available sensors."))
     }
 
     private var thermalDescription: String {
         switch readings.thermal {
-        case .nominal: return tr("正常", "Normal")
+        case .nominal: return tr("热状态正常", "Thermals normal")
         case .fair: return tr("轻度升温", "Warm")
-        case .serious: return tr("较高", "High")
-        case .critical: return tr("过热", "Critical")
-        default: return tr("未知", "Unknown")
-        }
-    }
-
-    private var thermalColor: Color {
-        switch readings.thermal {
-        case .nominal: return jade
-        case .fair, .serious: return amber
-        case .critical: return .orange
-        default: return StrataColor.muted
+        case .serious: return tr("热压力较高", "High thermal pressure")
+        case .critical: return tr("热压力严重", "Critical thermal pressure")
+        default: return tr("热状态未知", "Thermals unknown")
         }
     }
 
@@ -482,110 +519,167 @@ struct StatusBoard: View {
         return tr("\(minutes) 分钟", "\(minutes) min")
     }
 
-    private func usageCard(memory: Bool) -> some View {
-        let color = memory ? lilac : amber
-        let fraction = memory ? readings.memory?.fraction : readings.cpu
+    private enum Usage { case cpu, gpu, memory }
+
+    private func usage(_ kind: Usage) -> some View {
+        let sensor = readings.sensors
+        let title = kind == .cpu ? "CPU" : kind == .gpu ? "GPU" : tr("内存", "Memory")
+        let color = kind == .cpu ? jade : kind == .gpu ? amber : lilac
+        let key: KeyPath<ResourceSample, Double?> = kind == .cpu ? \.cpu : kind == .gpu ? \.gpu : \.memory
+        let fraction = readings.trend.samples.last?[keyPath: key]
+        let temperature = kind == .cpu ? sensor.cpuCelsius : sensor.gpuCelsius
+        let badge = kind == .memory ? readings.vitals.pressure?.label : temperature.map { "\(Int($0.rounded()))°C" }
+        let points = readings.trend.points(for: key)
         return StatusTile(tint: color) {
-            VStack(alignment: .leading, spacing: 7) {
-                tileLabel(memory ? tr("内存", "Memory") : "CPU", icon: memory ? "memorychip" : "cpu", color: color)
-                Spacer(minLength: 0)
-                if let fraction {
-                    metricValue(String(Int((fraction * 100).rounded())), unit: "%")
-                } else {
-                    Text(readings.warmingUp && !memory ? tr("采样中…", "Sampling…") : tr("无法读取", "Unavailable")).font(.title3)
-                }
-                MetricTrace(points: readings.trend.points(for: memory ? \.memory : \.cpu), color: color, bars: !memory)
-                    .frame(maxHeight: 60)
-                HStack {
-                    Text(tr("60 秒前", "60s ago")); Spacer(); Text(tr("现在", "Now"))
-                }.font(.system(size: 10)).foregroundStyle(StrataColor.muted)
-                Spacer(minLength: 0)
-                if memory, let reading = readings.memory {
-                    Text(memorySize(reading.used) + " / " + memorySize(reading.total))
-                        .font(.caption).lineLimit(1).minimumScaleFactor(0.75)
-                } else {
-                    Text(memory ? tr("已用内存", "Used memory") : tr("全机使用率", "System-wide usage")).font(.caption)
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                headline(title, kind == .cpu ? "cpu" : kind == .gpu ? "display" : "memorychip", color: color, badge: badge)
+                Spacer(minLength: 1)
+                metricValue(fraction.map { String(Int(($0 * 100).rounded())) } ?? "—", unit: fraction == nil ? "" : "%")
+                if kind == .cpu {
+                    Button { showCores.toggle() } label: {
+                        Group {
+                            if showCores {
+                                HStack(alignment: .bottom, spacing: 3) {
+                                    ForEach(readings.usageByCore.indices, id: \.self) { i in
+                                        if let fraction = readings.usageByCore[i] {
+                                            RoundedRectangle(cornerRadius: 1.5).fill(color.gradient)
+                                                .frame(height: max(1, 21 * fraction))
+                                        } else { Color.clear.frame(height: 1) }
+                                    }
+                                }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                            } else { MetricTrace(points: points, color: color) }
+                        }.contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).frame(height: 22)
+                    .help(showCores ? tr("每条代表一个核心。点按查看 60 秒趋势。", "Each bar is one core. Click for the 60-second trend.") : tr("点按查看各核心使用率", "Click to show usage by core"))
+                    .accessibilityLabel(tr("切换核心读数和 CPU 历史", "Switch between CPU cores and history"))
+                } else { MetricTrace(points: points, color: color).frame(height: 22) }
+                Spacer(minLength: 1)
+                caption(usageDetail(kind))
             }
         }
     }
 
-    private var network: some View {
-        StatusTile(tint: sky) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    tileLabel(tr("网络速率", "Network"), icon: "network", color: sky)
-                    Spacer()
-                    Text(readings.link ?? tr("主接口不可用", "No active interface")).font(.caption).foregroundStyle(StrataColor.muted)
+    private func usageDetail(_ kind: Usage) -> String {
+        switch kind {
+        case .cpu:
+            let cores = ProcessInfo.processInfo.activeProcessorCount
+            let load = readings.vitals.load.map { $0.formatted(.number.locale(locale).precision(.fractionLength(1))) }
+            return tr("\(cores) 核", "\(cores) cores") + (load.map { tr(" · 负载 ", " · Load avg ") + $0 } ?? "")
+        case .gpu:
+            guard let percent = readings.sensors.gpuPercent else { return tr("系统未提供 GPU 使用率", "GPU usage unavailable") }
+            let load = percent < 10 ? tr("空闲", "Idle") : percent < 80 ? tr("运行中", "Active") : tr("高负载", "High load")
+            return load + (readings.sensors.gpuCores.map { tr(" · \($0) 核", " · \($0) cores") } ?? "")
+                + (readings.gpuWatts.map { String(format: " · %.1f W", $0) } ?? "")
+        case .memory:
+            return (readings.memory.map { memorySize($0.used) + " / " + memorySize($0.total) } ?? "—")
+                + (readings.vitals.swap.map { tr(" · 交换 ", " · Swap ") + memorySize($0) } ?? "")
+        }
+    }
+
+    private var battery: some View {
+        let s = readings.sensors
+        let watts = s.batteryWatts.map { String(format: "%.1f W", abs($0)) }
+        let minutes = s.batteryMinutes.map { String(format: "%d:%02d", $0 / 60, $0 % 60) }
+        let time = minutes.map { readings.battery.supply == .charging ? tr("\($0) 后充满", "\($0) to full") : tr("剩余 \($0)", "\($0) left") }
+        return StatusTile(tint: lime) {
+            VStack(alignment: .leading, spacing: 4) {
+                headline(tr("电池", "Battery"), "battery.75", color: lime, badge: s.batteryHealthPercent.map { tr("健康 \(Int($0))%", "\(Int($0))% health") })
+                Spacer(minLength: 1)
+                HStack(alignment: .firstTextBaseline) {
+                    metricValue(readings.battery.charge.map { String(Int(($0 * 100).rounded())) } ?? "—", unit: readings.battery.charge == nil ? "" : "%")
+                    Spacer(minLength: 1)
+                    if let cycles = s.batteryCycles { caption(tr("\(cycles) 次循环", "\(cycles) cycles")) }
                 }
-                Spacer(minLength: 4)
-                HStack(spacing: 10) {
-                    speed(tr("下载", "Download"), icon: "arrow.down", rate: readings.throughput?.down)
-                    Divider()
-                    speed(tr("上传", "Upload"), icon: "arrow.up", rate: readings.throughput?.up)
-                }.fixedSize(horizontal: false, vertical: true)
+                caption(([readings.battery.supply.description] + [watts, time].compactMap { $0 }).joined(separator: " · "))
+                Spacer(minLength: 0)
+                if let topPower { caption(tr("CPU 能耗最高 · ", "Top CPU power · ") + topPower) }
+                else if let power = s.adapterWatts { caption(tr("适配器 ", "Adapter ") + "\(Int(power)) W") }
             }
         }
     }
 
-    private func speed(_ title: String, icon: String, rate: Double?) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Label(title, systemImage: icon).font(.caption).foregroundStyle(sky)
-            let bytes = rate.map { Int64(clamping: UInt64(min(Double(Int64.max / 2), $0))) }
-            let formatted = bytes.map { $0 < 1000 ? String($0) + " B" : storageSize($0) }
-            Text(formatted.map { $0 + "/s" } ?? "—")
-                .font(.system(size: 22, weight: .medium, design: .rounded)).monospacedDigit()
-                .lineLimit(1).minimumScaleFactor(0.68)
-        }.frame(maxWidth: .infinity, alignment: .leading)
+    private func gauge(_ value: Double?, _ tint: Color) -> some View {
+        GeometryReader { rect in
+            Capsule().fill(tint.opacity(0.12)).overlay(alignment: .leading) {
+                if let value { Capsule().fill(tint).frame(width: rect.size.width * min(1, max(0, value))) }
+            }
+        }.frame(height: 5)
     }
 
     private var storage: some View {
-        StatusTile(tint: amber) {
-            VStack(alignment: .leading, spacing: 9) {
-                tileLabel(tr("启动磁盘", "Startup disk"), icon: "internaldrive", color: amber)
-                Spacer(minLength: 2)
-                if let disk = readings.disk {
-                    metricValue(storageSize(Int64(clamping: disk.total - disk.used)))
-                    Text(tr("可用空间", "Available")).font(.caption).foregroundStyle(StrataColor.muted)
-                    Spacer(minLength: 2)
-                    GeometryReader { area in
-                        Capsule().fill(amber.opacity(0.13)).overlay(alignment: .leading) {
-                            Capsule().fill(amber).frame(width: area.size.width * disk.fraction)
-                        }
-                    }.frame(height: 6)
-                    Text(tr("已用 ", "Used ") + storageSize(Int64(clamping: disk.used)) + " / " + storageSize(Int64(clamping: disk.total)))
-                        .font(.caption).lineLimit(1).minimumScaleFactor(0.75)
-                } else { Text(tr("容量不可用", "Capacity unavailable")).foregroundStyle(StrataColor.muted) }
+        let disk = readings.disk
+        return StatusTile(tint: amber) {
+            VStack(alignment: .leading, spacing: 4) {
+                headline(tr("可用空间", "Free space"), "internaldrive", color: amber, badge: disk.map { storageSize(Int64(clamping: $0.total)) })
+                Spacer(minLength: 1)
+                metricValue(disk.map { storageSize(Int64(clamping: $0.total - $0.used)) } ?? "—")
+                gauge(disk?.fraction, amber)
+                if let disk { caption(tr("已用 ", "Used ") + storageSize(Int64(clamping: disk.used)) + " · \(Int((disk.fraction * 100).rounded()))%") }
+                Spacer(minLength: 0)
+                if let rates = readings.diskIO { caption(tr("读 ", "R ") + rate(rates.read) + tr(" · 写 ", " · W ") + rate(rates.write)) }
             }
         }
     }
 
-    private var power: some View {
-        StatusTile(tint: lime) {
-            VStack(alignment: .leading, spacing: 7) {
-                tileLabel(tr("电池", "Battery"), icon: "battery.75", color: lime)
-                Spacer(minLength: 2)
-                if let charge = readings.battery.charge {
-                    metricValue(String(Int((charge * 100).rounded())), unit: "%")
-                    GeometryReader { area in
-                        HStack(spacing: 2) {
-                            ZStack(alignment: .leading) {
-                                RoundedRectangle(cornerRadius: 5).strokeBorder(lime.opacity(0.63), lineWidth: 1.5)
-                                GeometryReader { inner in
-                                    RoundedRectangle(cornerRadius: 2.5).fill(lime)
-                                        .frame(width: inner.size.width * charge)
-                                }.padding(3)
-                            }
-                            Capsule().fill(lime.opacity(0.65)).frame(width: 3, height: 8)
-                        }.frame(width: min(100, area.size.width), height: 19)
-                    }.frame(height: 20).accessibilityHidden(true)
+    private func rate(_ value: Double?) -> String {
+        guard let value, value.isFinite, value >= 0 else { return "—" }
+        let bytes = Int64(min(Double(Int64.max / 2), value))
+        return (bytes < 1000 ? "\(bytes) B" : storageSize(bytes)) + "/s"
+    }
+
+    private var network: some View {
+        let history = readings.trend
+        let peak = max(1, history.samples.filter { $0.interface == readings.link }.reduce(0.0) { max($0, $1.down ?? 0, $1.up ?? 0) })
+        return StatusTile(tint: sky) {
+            VStack(alignment: .leading, spacing: 4) {
+                headline(tr("网络", "Network"), "network", color: sky, badge: readings.linkType ?? readings.link)
+                Spacer(minLength: 1)
+                metricValue(rate(readings.throughput?.down))
+                ZStack {
+                    MetricTrace(points: history.points(for: \.down, upperBound: peak, sameLink: true), color: sky)
+                    MetricTrace(points: history.points(for: \.up, upperBound: peak, sameLink: true), color: jade, baseline: false)
+                }.frame(height: 21)
+                Spacer(minLength: 0)
+                caption(tr("↑ 上传 ", "↑ Upload ") + rate(readings.throughput?.up)
+                        + (readings.signalDBm.map { " · \($0) dBm" } ?? readings.link.map { " · " + $0 } ?? ""))
+            }
+        }.accessibilityHint(tr("大号读数为下载速率，曲线显示最近一分钟的双向流量。", "The main reading is download speed. The traces show both directions over the last minute."))
+    }
+
+    private var fan: some View {
+        let s = readings.sensors
+        return StatusTile(tint: amber) {
+            VStack(alignment: .leading, spacing: 4) {
+                headline(tr("风扇", "Fan"), "fanblades", color: amber, badge: s.fanPercent.map { tr("转速 \(Int($0.rounded()))%", "\(Int($0.rounded()))% of max") })
+                Spacer(minLength: 1)
+                metricValue(s.fanRPM.map { Int($0.rounded()).formatted(.number.locale(locale)) } ?? "—", unit: s.fanRPM == nil ? "" : "RPM")
+                gauge(s.fanPercent.map { $0 / 100 }, amber)
+                Spacer(minLength: 0)
+                if let count = s.fanCount, count > 0, s.fanRPM != nil {
+                    let mode = s.fanAutomatic.map { $0 ? tr("自动调速", "Automatic") : tr("手动调速", "Manual") }
+                    caption(tr("\(count) 个风扇", count == 1 ? "1 fan" : "\(count) fans") + " · " + (mode ?? tr("实测转速", "Measured speed")))
                 } else {
-                    metricValue("—")
+                    caption(s.fanCount == 0 ? tr("本机无内置风扇", "Fanless Mac") : tr("转速传感器不可用", "RPM sensor unavailable"))
                 }
-                Spacer(minLength: 2)
-                Text(readings.battery.supply.description).font(.caption).foregroundStyle(StrataColor.muted)
             }
         }
+    }
+}
+
+private struct CardHeightKey: EnvironmentKey { static let defaultValue: CGFloat = 139 }
+private extension EnvironmentValues {
+    var statusCardHeight: CGFloat {
+        get { self[CardHeightKey.self] }
+        set { self[CardHeightKey.self] = newValue }
+    }
+}
+
+private actor StatusSampler {
+    var readings = StatusReadings()
+    func next() -> StatusReadings {
+        readings.sample()
+        return readings
     }
 }
 
@@ -597,11 +691,12 @@ struct SystemPage: View {
         StatusBoard(readings: readings)
             .task(id: phase) {
                 guard phase == .active else { return }
-                var next = StatusReadings()
+                let sampler = StatusSampler()
                 while !Task.isCancelled {
-                    next.sample()
-                    readings = next
-                    do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { break }
+                    let sample = await sampler.next()
+                    guard !Task.isCancelled else { return }
+                    readings = sample
+                    do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
                 }
             }
     }
