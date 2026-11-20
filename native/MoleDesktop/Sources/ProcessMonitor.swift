@@ -156,15 +156,13 @@ private enum ProcessColumn {
 }
 
 struct ProcessMonitorView: View {
-    var onTopPower: (String?) -> Void = { _ in }
+    let rows: [ProcessReading]
+    let didSample: Bool
 
-    @Environment(\.scenePhase) private var phase
     @Environment(\.locale) private var locale
     @State private var query = ""
     @State private var sort: ProcessColumn = .memory
     @State private var ascending = false
-    @State private var rows: [ProcessReading] = []
-    @State private var didSample = false
 
     private var filtered: [ProcessReading] {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -241,26 +239,7 @@ struct ProcessMonitorView: View {
         }
         .background(StrataColor.panel, in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(StrataColor.border).allowsHitTesting(false))
-        .task(id: phase) {
-            guard phase == .active else { return }
-            let sampler = ProcessSampler()
-            do {
-                while !Task.isCancelled {
-                    let sample = try await sampler.sample()
-                    try Task.checkCancellation()
-                    rows = sample
-                    didSample = true
-                    onTopPower(sample.filter { ($0.watts ?? 0) > 0 }.max { ($0.watts ?? 0) < ($1.watts ?? 0) }?.name)
-                    try await Task.sleep(nanoseconds: 3_000_000_000)
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                rows = []
-                didSample = true
-                onTopPower(nil)
-            }
-        }
+
     }
 
     private func column(_ column: ProcessColumn) -> some View {
@@ -297,7 +276,7 @@ private struct ProcessMonitorRow: View {
             }.frame(width: 90, alignment: .trailing)
             Text(reading.cpu.map { $0.formatted(.number.locale(locale).precision(.fractionLength(1))) + "%" } ?? "—")
                 .frame(width: 70, alignment: .trailing)
-            Text(reading.watts.map { $0.formatted(.number.locale(locale).precision(.fractionLength(2))) + " W" } ?? "—")
+            Text(reading.watts.map(powerReading) ?? "—")
                 .frame(width: 72, alignment: .trailing)
             Text(verbatim: String(reading.id.pid)).foregroundStyle(StrataColor.muted)
                 .frame(width: 55, alignment: .trailing)

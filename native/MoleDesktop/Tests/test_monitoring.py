@@ -12,6 +12,9 @@ cases = {
     "HardwareCounterTests": ["HardwareTelemetry"],
     "ProcessMonitorTests": ["ProcessMonitor", "Localization", "Design", "ReliefLines"],
     "StatusVitalsTests": ["StatusVitals", "Localization"],
+    "MenuActivityTests": ["MenuActivityFooter", "Design", "ReliefLines", "Localization"],
+    "MonitorSessionTests": ["MonitorSession", "StatusPage", "ProcessMonitor", "HardwareTelemetry",
+                            "StatusVitals", "LinkQuality", "Design", "Localization", "ReliefLines"],
 }
 
 if __name__ == "__main__":

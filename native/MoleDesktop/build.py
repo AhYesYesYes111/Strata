@@ -66,7 +66,7 @@ def build():
         plist = {
             "CFBundleName": "Strata", "CFBundleDisplayName": "Strata", "CFBundleIconFile": "Strata",
             "CFBundleIdentifier": bundle_id, "CFBundlePackageType": "APPL", "CFBundleExecutable": "Strata",
-            "CFBundleShortVersionString": "0.5.0", "CFBundleVersion": "5",
+            "CFBundleShortVersionString": "0.6.0", "CFBundleVersion": "6",
             "CFBundleDevelopmentRegion": "en", "CFBundleLocalizations": ["en", "zh-Hans"],
             "CFBundleInfoDictionaryVersion": "6.0",
             "LSMinimumSystemVersion": "13.0", "LSApplicationCategoryType": "public.app-category.utilities",

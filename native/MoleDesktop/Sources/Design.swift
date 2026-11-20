@@ -54,6 +54,14 @@ func storageSize(_ bytes: Int64) -> String {
     bytes.formatted(.byteCount(style: .decimal, spellsOutZero: false).locale(AppLanguage.current.locale))
 }
 
+func powerReading(_ watts: Double) -> String {
+    guard watts.isFinite, watts >= 0 else { return "—" }
+    if watts == 0 { return "0 W" }
+    if watts < 0.001 { return "<1 mW" }
+    if watts < 0.1 { return String(Int((watts * 1000).rounded())) + " mW" }
+    return watts.formatted(.number.locale(AppLanguage.current.locale).precision(.fractionLength(0...2))) + " W"
+}
+
 struct VolumeReading {
     let volume: String
     let capacity: Int64
@@ -68,7 +76,7 @@ struct VolumeReading {
         // macOS includes reclaimable space in its capacity for important usage.
         let important = try? root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage
         let candidates = [important, values.volumeAvailableCapacity.map { Int64($0) }]
-        guard let free = candidates.compactMap({ $0 }).first(where: { (0...Int64(capacity)).contains($0) }) else { return nil }
+        guard let free = candidates.compactMap({ $0 }).filter({ (0...Int64(capacity)).contains($0) }).max() else { return nil }
         return VolumeReading(volume: values.volumeName ?? root.path, capacity: Int64(capacity), free: free)
     }
 }

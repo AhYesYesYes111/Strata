@@ -203,8 +203,8 @@ private func chipName() -> String {
 }
 
 struct StatusReadings {
-    let chip = chipName()
-    private let networkStore = SCDynamicStoreCreate(nil, "Strata Status" as CFString, nil, nil)
+    private(set) var chip = "Mac"
+    private lazy var networkStore = SCDynamicStoreCreate(nil, "Strata Status" as CFString, nil, nil)
     private var cores: [ProcessorSample]?
     private var lastCapacity: Date?
     private(set) var usageByCore: [Double?] = []
@@ -231,8 +231,13 @@ struct StatusReadings {
     private(set) var uptime: TimeInterval?
     private(set) var thermal: ProcessInfo.ThermalState?
 
+    init(history: ResourceTrend = ResourceTrend()) {
+        trend = history
+    }
+
     mutating func sample() {
         let now = Date()
+        if lastCapacity == nil { chip = chipName() }
         let elapsed = trend.samples.last.map { now.timeIntervalSince($0.date) } ?? 0
         let continuous = elapsed > 0 && elapsed <= ResourceTrend.longestInterval
         let current = ProcessorSample.readCores()
@@ -285,11 +290,11 @@ struct StatusReadings {
     }
 }
 
-private let jade = Color(red: 0.51, green: 0.88, blue: 0.76)
-private let lilac = Color(red: 0.77, green: 0.73, blue: 0.99)
-private let amber = Color(red: 0.97, green: 0.78, blue: 0.50)
-private let sky = Color(red: 0.55, green: 0.78, blue: 0.98)
-private let lime = Color(red: 0.72, green: 0.88, blue: 0.56)
+let jade = Color(red: 0.51, green: 0.88, blue: 0.76)
+let lilac = Color(red: 0.77, green: 0.73, blue: 0.99)
+let amber = Color(red: 0.97, green: 0.78, blue: 0.50)
+let sky = Color(red: 0.55, green: 0.78, blue: 0.98)
+let lime = Color(red: 0.72, green: 0.88, blue: 0.56)
 
 private struct StatusTile<Content: View>: View {
     @Environment(\.statusCardHeight) private var height
@@ -329,7 +334,7 @@ private func metricValue(_ value: String, unit: String = "") -> some View {
     }.monospacedDigit().lineLimit(1).minimumScaleFactor(0.62)
 }
 
-private struct MetricTrace: View {
+struct MetricTrace: View {
     let points: [ResourceTrend.Point]
     let color: Color
     var baseline = true
@@ -356,7 +361,21 @@ private struct MetricTrace: View {
     }
 }
 
-private func memorySize(_ bytes: UInt64) -> String {
+func statusUptime(_ uptime: TimeInterval?) -> String {
+    guard let uptime else { return "—" }
+    let minutes = Int(uptime / 60)
+    if minutes >= 1440 { return tr("\(minutes / 1440) 天 \(minutes / 60 % 24) 小时", "\(minutes / 1440)d \(minutes / 60 % 24)h") }
+    if minutes >= 60 { return tr("\(minutes / 60) 小时 \(minutes % 60) 分", "\(minutes / 60)h \(minutes % 60)m") }
+    return tr("\(minutes) 分钟", "\(minutes) min")
+}
+
+func statusRate(_ value: Double?) -> String {
+    guard let value, value.isFinite, value >= 0 else { return "—" }
+    let bytes = Int64(min(Double(Int64.max / 2), value))
+    return (bytes < 1000 ? "\(bytes) B" : storageSize(bytes)) + "/s"
+}
+
+func memorySize(_ bytes: UInt64) -> String {
     let gibibytes = Double(bytes) / 1_073_741_824
     return gibibytes.formatted(.number.locale(AppLanguage.current.locale).precision(.fractionLength(0...1))) + " GiB"
 }
@@ -414,7 +433,11 @@ private struct ChipArtwork: View {
 struct StatusBoard: View {
     @Environment(\.locale) private var locale
     let readings: StatusReadings
-    @State private var topPower: String?
+    var processes: [ProcessReading] = []
+    var didSampleProcesses = false
+    private var topPower: String? {
+        processes.max { ($0.watts ?? 0) < ($1.watts ?? 0) }.flatMap { ($0.watts ?? 0) > 0 ? $0.name : nil }
+    }
     @State private var showCores = true
 
     var body: some View {
@@ -457,7 +480,7 @@ struct StatusBoard: View {
                     }
                 }
             }
-            ProcessMonitorView { topPower = $0 }
+            ProcessMonitorView(rows: processes, didSample: didSampleProcesses)
         }
         .environment(\.statusCardHeight, height)
         .frame(width: width).padding(.horizontal, inset).padding(.vertical, 12)
@@ -496,7 +519,7 @@ struct StatusBoard: View {
                     ChipArtwork().frame(width: 61, height: 47)
                 }
                 Spacer(minLength: 1)
-                caption(tr("运行 ", "Up ") + uptimeDescription + " · " + thermalDescription)
+                caption(tr("运行 ", "Up ") + statusUptime(readings.uptime) + " · " + thermalDescription)
             }
         }.help(tr("根据 CPU、内存、磁盘和可用传感器估算，满分 100。", "Resource score out of 100, based on CPU, memory, storage and available sensors."))
     }
@@ -509,14 +532,6 @@ struct StatusBoard: View {
         case .critical: return tr("热压力严重", "Critical thermal pressure")
         default: return tr("热状态未知", "Thermals unknown")
         }
-    }
-
-    private var uptimeDescription: String {
-        guard let uptime = readings.uptime else { return "—" }
-        let minutes = Int(uptime / 60)
-        if minutes >= 1440 { return tr("\(minutes / 1440) 天 \(minutes / 60 % 24) 小时", "\(minutes / 1440)d \(minutes / 60 % 24)h") }
-        if minutes >= 60 { return tr("\(minutes / 60) 小时 \(minutes % 60) 分", "\(minutes / 60)h \(minutes % 60)m") }
-        return tr("\(minutes) 分钟", "\(minutes) min")
     }
 
     private enum Usage { case cpu, gpu, memory }
@@ -570,7 +585,7 @@ struct StatusBoard: View {
             guard let percent = readings.sensors.gpuPercent else { return tr("系统未提供 GPU 使用率", "GPU usage unavailable") }
             let load = percent < 10 ? tr("空闲", "Idle") : percent < 80 ? tr("运行中", "Active") : tr("高负载", "High load")
             return load + (readings.sensors.gpuCores.map { tr(" · \($0) 核", " · \($0) cores") } ?? "")
-                + (readings.gpuWatts.map { String(format: " · %.1f W", $0) } ?? "")
+                + (readings.gpuWatts.map { " · " + powerReading($0) } ?? "")
         case .memory:
             return (readings.memory.map { memorySize($0.used) + " / " + memorySize($0.total) } ?? "—")
                 + (readings.vitals.swap.map { tr(" · 交换 ", " · Swap ") + memorySize($0) } ?? "")
@@ -579,7 +594,7 @@ struct StatusBoard: View {
 
     private var battery: some View {
         let s = readings.sensors
-        let watts = s.batteryWatts.map { String(format: "%.1f W", abs($0)) }
+        let watts = s.batteryWatts.map { powerReading(abs($0)) }
         let minutes = s.batteryMinutes.map { String(format: "%d:%02d", $0 / 60, $0 % 60) }
         let time = minutes.map { readings.battery.supply == .charging ? tr("\($0) 后充满", "\($0) to full") : tr("剩余 \($0)", "\($0) left") }
         return StatusTile(tint: lime) {
@@ -588,13 +603,18 @@ struct StatusBoard: View {
                 Spacer(minLength: 1)
                 HStack(alignment: .firstTextBaseline) {
                     metricValue(readings.battery.charge.map { String(Int(($0 * 100).rounded())) } ?? "—", unit: readings.battery.charge == nil ? "" : "%")
+                    if let adapter = s.adapterWatts {
+                        Label(powerReading(adapter), systemImage: "bolt.fill")
+                            .font(.caption).foregroundStyle(lime)
+                            .help(tr("当前电源适配器额定功率", "Power adapter rating"))
+                    }
                     Spacer(minLength: 1)
                     if let cycles = s.batteryCycles { caption(tr("\(cycles) 次循环", "\(cycles) cycles")) }
                 }
-                caption(([readings.battery.supply.description] + [watts, time].compactMap { $0 }).joined(separator: " · "))
+                let batteryPower = watts.map { readings.battery.supply == .adapter ? tr("电池 ", "Battery ") + $0 : $0 }
+                caption(([readings.battery.supply.description] + [batteryPower, time].compactMap { $0 }).joined(separator: " · "))
                 Spacer(minLength: 0)
                 if let topPower { caption(tr("CPU 能耗最高 · ", "Top CPU power · ") + topPower) }
-                else if let power = s.adapterWatts { caption(tr("适配器 ", "Adapter ") + "\(Int(power)) W") }
             }
         }
     }
@@ -617,15 +637,9 @@ struct StatusBoard: View {
                 gauge(disk?.fraction, amber)
                 if let disk { caption(tr("已用 ", "Used ") + storageSize(Int64(clamping: disk.used)) + " · \(Int((disk.fraction * 100).rounded()))%") }
                 Spacer(minLength: 0)
-                if let rates = readings.diskIO { caption(tr("读 ", "R ") + rate(rates.read) + tr(" · 写 ", " · W ") + rate(rates.write)) }
+                if let rates = readings.diskIO { caption(tr("读 ", "R ") + statusRate(rates.read) + tr(" · 写 ", " · W ") + statusRate(rates.write)) }
             }
         }
-    }
-
-    private func rate(_ value: Double?) -> String {
-        guard let value, value.isFinite, value >= 0 else { return "—" }
-        let bytes = Int64(min(Double(Int64.max / 2), value))
-        return (bytes < 1000 ? "\(bytes) B" : storageSize(bytes)) + "/s"
     }
 
     private var network: some View {
@@ -635,13 +649,13 @@ struct StatusBoard: View {
             VStack(alignment: .leading, spacing: 4) {
                 headline(tr("网络", "Network"), "network", color: sky, badge: readings.linkType ?? readings.link)
                 Spacer(minLength: 1)
-                metricValue(rate(readings.throughput?.down))
+                metricValue(statusRate(readings.throughput?.down))
                 ZStack {
                     MetricTrace(points: history.points(for: \.down, upperBound: peak, sameLink: true), color: sky)
                     MetricTrace(points: history.points(for: \.up, upperBound: peak, sameLink: true), color: jade, baseline: false)
                 }.frame(height: 21)
                 Spacer(minLength: 0)
-                caption(tr("↑ 上传 ", "↑ Upload ") + rate(readings.throughput?.up)
+                caption(tr("↑ 上传 ", "↑ Upload ") + statusRate(readings.throughput?.up)
                         + (readings.signalDBm.map { " · \($0) dBm" } ?? readings.link.map { " · " + $0 } ?? ""))
             }
         }.accessibilityHint(tr("大号读数为下载速率，曲线显示最近一分钟的双向流量。", "The main reading is download speed. The traces show both directions over the last minute."))
@@ -675,29 +689,57 @@ private extension EnvironmentValues {
     }
 }
 
-private actor StatusSampler {
-    var readings = StatusReadings()
-    func next() -> StatusReadings {
-        readings.sample()
-        return readings
+@MainActor
+struct SystemPage: View {
+    @Environment(\.scenePhase) private var phase
+    @ObservedObject private var monitor = MonitorSession.shared
+
+    var body: some View {
+        StatusBoard(readings: monitor.readings, processes: monitor.processes, didSampleProcesses: monitor.didSampleProcesses)
+            .background(StatusWindowDemand(active: phase == .active).frame(width: 0, height: 0))
     }
 }
 
-struct SystemPage: View {
-    @Environment(\.scenePhase) private var phase
-    @State private var readings = StatusReadings()
+private struct StatusWindowDemand: NSViewRepresentable {
+    let active: Bool
 
-    var body: some View {
-        StatusBoard(readings: readings)
-            .task(id: phase) {
-                guard phase == .active else { return }
-                let sampler = StatusSampler()
-                while !Task.isCancelled {
-                    let sample = await sampler.next()
-                    guard !Task.isCancelled else { return }
-                    readings = sample
-                    do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
+    func makeNSView(context: Context) -> Observer { Observer() }
+    func updateNSView(_ view: Observer, context: Context) { view.active = active }
+    static func dismantleNSView(_ view: Observer, coordinator: ()) { view.disconnect() }
+
+    final class Observer: NSView {
+        private let id = UUID()
+        var active = false {
+            didSet { if oldValue != active { refreshAfterLayout() } }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+            if let window {
+                NotificationCenter.default.addObserver(self, selector: #selector(occlusionChanged(_:)),
+                                                       name: NSWindow.didChangeOcclusionStateNotification, object: window)
+            }
+            refreshAfterLayout()
+        }
+
+        @objc private func occlusionChanged(_ note: Notification) { refreshAfterLayout() }
+
+        private func refreshAfterLayout() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if self.active, self.window?.occlusionState.contains(.visible) == true {
+                    MonitorSession.shared.startWindow(self.id)
+                } else {
+                    MonitorSession.shared.stopWindow(self.id)
                 }
             }
+        }
+
+        func disconnect() {
+            active = false
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+            MonitorSession.shared.stopWindow(id)
+        }
     }
 }

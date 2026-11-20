@@ -41,9 +41,11 @@ private extension FocusedValues {
 
 @main
 struct StrataApp: App {
+    @NSApplicationDelegateAdaptor(StrataAppDelegate.self) private var appDelegate
+
     var body: some Scene {
-        Window("Strata", id: "main") {
-            WorkspaceView()
+        WindowGroup("Strata", id: "main") {
+            WorkspaceView(workspace: appDelegate.workspace)
                 .frame(minWidth: 790, minHeight: 560)
                 .preferredColorScheme(.dark)
         }
@@ -57,7 +59,9 @@ struct StrataApp: App {
 }
 
 struct WorkspaceView: View {
-    @State private var page: WorkspacePage = .clean
+    @ObservedObject var workspace: WorkspaceNavigation
+    @Environment(\.openWindow) private var openWindow
+    private var page: WorkspacePage { workspace.page }
     @AppStorage(AppLanguage.key) private var language: AppLanguage = .system
     @State private var accessEntry: AccessEntry?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -92,7 +96,7 @@ struct WorkspaceView: View {
                 switch page {
                 case .clean:
                     CleanPage(model: cleanup) { location in
-                        page = .analyze
+                        workspace.page = .analyze
                         disk.scan(location)
                     }
                 case .software: SoftwarePage()
@@ -113,6 +117,9 @@ struct WorkspaceView: View {
                 .environment(\.locale, language.locale)
         }
         .environment(\.locale, language.locale)
+        .background(MainWindowReader { [openWindow] window in
+            workspace.attach(window) { openWindow(id: "main") }
+        })
         .focusedSceneValue(\.accessGuide, { accessEntry = .guide })
         .onDisappear { cleanup.cancel(); maintenance.cancel(); disk.cancel() }
     }
@@ -148,7 +155,7 @@ struct WorkspaceView: View {
             ForEach(Array(WorkspacePage.allCases.enumerated()), id: \.element) { index, section in
                 let selected = section == page
                 Button {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { page = section }
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { workspace.page = section }
                 } label: {
                     Text(section.title)
                         .font(.system(size: 13, weight: .semibold))
