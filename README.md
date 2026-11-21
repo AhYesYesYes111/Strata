@@ -1,30 +1,41 @@
 # Strata
 
-[简体中文](README_CN.md)
+Strata is a native macOS app that shows where your disk space goes, lets you review cleanup candidates, and tracks system activity in the window and menu bar. Its SwiftUI interface is available in English and Simplified Chinese.
 
-Strata is a native macOS app for finding large folders, reviewing cleanup candidates and checking which processes are using resources. This fork builds its SwiftUI interface in `native/MoleDesktop` and bundles the cleanup and maintenance scripts from [Mole CLI](https://github.com/tw93/Mole).
+[Build Strata](#build-strata) · [Using Strata](#using-strata) · [Mole CLI](#about-the-upstream-mole-cli) · [简体中文](README_CN.md)
 
-## Build and open Strata
+![Strata’s Clean view with storage usage and shortcuts to common folders](docs/img/strata-clean-en.png)
 
-On a Mac with Python 3 and Apple developer tools that include the macOS 26 SDK or newer, run these commands from the repository root.
+## Build Strata
+
+Strata runs on **macOS 13 or later**. Building from source requires **Python 3** and **Apple developer tools with the macOS 26 SDK or newer**.
 
 ```sh
+git clone https://github.com/AhYesYesYes111/Mole.git strata
+cd strata
 python3 native/MoleDesktop/build.py
 open native/MoleDesktop/build/Strata.app
 ```
 
-The build also creates `native/MoleDesktop/build/Strata.zip`. The app runs on macOS 13 or later and targets the architecture of the Mac used to build it.
+If you already have this checkout, run the last two commands from its root. The script builds and locally signs the app for the current Mac’s architecture. It also saves an archive at `native/MoleDesktop/build/Strata.zip`.
 
-- **Analyze** maps disk usage by folder. Select a large tile to see what takes up space inside.
-- **Clean** previews candidates and lets you search the report. Confirming runs the full cleanup, which can permanently remove eligible files, including items in your Trash. Filtering the report only changes what you see.
-- **Apps** finds installed applications and reveals them in Finder. **Maintain** previews the tasks Mole would run.
-- **Status** shows CPU, memory and network activity alongside a searchable process list.
+## Using Strata
 
-The interface supports English and Simplified Chinese. The app guide covers permissions, shortcuts and report export. [Strata guide (中文)](native/MoleDesktop/README.md) · [License and credits](LICENSES.md)
+| View | What you can do |
+| --- | --- |
+| **Analyze** | Open the startup disk or a folder of your choice. Select a tile to see what takes up space inside it, or rescan to refresh the saved result. |
+| **Clean** | Run a preview to estimate reclaimable space from caches, logs, and app leftovers. Search the report or export it as text. |
+| **Status** | Check CPU, memory, disk activity, network, and battery. Search and sort processes, or open the menu bar panel for a quick overview. |
+| **Apps** | Search installed applications, check their versions, and reveal them in Finder. |
+| **Maintain** | Preview system maintenance tasks and see which ones Mole would skip. |
+
+> **Review the report before confirming cleanup.** Search only filters the report. When you confirm, Mole scans again and runs a full cleanup using the current protection rules. It permanently removes eligible items and empties your personal Trash by default.
+
+If you need to measure folders protected by macOS, **Access** opens Full Disk Access settings. The desktop guide covers permissions, keyboard shortcuts, report export, and tests. [Strata guide (简体中文)](native/MoleDesktop/README.md) · [Desktop source](native/MoleDesktop/Sources)
 
 ## About the upstream Mole CLI
 
-The following guide covers the terminal tool by tw93 and contributors. The installer and Homebrew commands install the CLI. The upstream project's own desktop app is available separately as [Mole Mac](https://mole.fit/).
+Strata bundles cleanup and maintenance scripts from Mole CLI, the terminal tool by tw93 and contributors. The installer and Homebrew commands below install the standalone CLI. The upstream project also publishes its own desktop app, Mole Mac. [Mole CLI source](https://github.com/tw93/Mole) · [Mole Mac](https://mole.fit/)
 
 <p>Mole CLI guides · English · <a href="README_CN.md">中文</a> · <a href="README_TW.md">繁體</a> · <a href="README_JA.md">日本語</a> · <a href="README_KR.md">한국어</a> · <a href="README_DE.md">Deutsch</a> · <a href="README_FR.md">Français</a> · <a href="README_PL.md">Polski</a> · <a href="README_PT-BR.md">Português</a> · <a href="README_UA.md">Українська</a> · <a href="README_RU.md">Русский</a></p>
 
@@ -161,7 +172,7 @@ iwr -useb https://raw.githubusercontent.com/tw93/Mole/windows/quick-install.ps1 
 curl -fsSL https://raw.githubusercontent.com/tw93/Mole/linux/install.sh | bash
 ```
 
-Mole is only distributed through Homebrew, this repository and [mole.fit](https://mole.fit/). `molemac.com`, `moleapp.net` and `molefit.com` are not Mole, and the Windows app at `mole.bluecatbot.com` is a separate community project.
+Mole is only distributed through Homebrew, the [upstream GitHub repository](https://github.com/tw93/Mole), and [mole.fit](https://mole.fit/). `molemac.com`, `moleapp.net` and `molefit.com` are not Mole, and the Windows app at `mole.bluecatbot.com` is a separate community project.
 
 ## Safety
 
@@ -511,7 +522,7 @@ The launchers auto-detect Terminal, iTerm2, Alacritty, kitty, WezTerm, Ghostty, 
 
 ## Community
 
-Thanks to everyone who helped build Mole. Go follow them. ❤️
+Thanks to the upstream contributors who build and maintain Mole. ❤️
 
 <a href="https://github.com/tw93/Mole/graphs/contributors">
   <img src="./CONTRIBUTORS.svg?v=2" alt="Mole contributors" width="1000" />
@@ -526,9 +537,9 @@ Watch the [Mole tutorial video](https://www.youtube.com/watch?v=UEe9-w4CcQ0) by 
 
 ## Support
 
-- Getting [Mole for Mac](https://mole.fit) is the most direct way to support Mole's development
-- If Mole helped you, give it a star, [share it](https://x.com/intent/tweet?url=https://github.com/tw93/Mole&text=Mole%20-%20Deep%20clean%20and%20optimize%20your%20Mac.), or open an issue or PR
-- I have two cats, TangYuan and Coke, and if Mole makes your life a little easier, feel free to treat them to <a href="https://cats.tw93.fun?name=Mole" target="_blank">canned food 🥩</a>
+- Buying Mole Mac supports development of the upstream project. [Mole Mac](https://mole.fit/)
+- If Mole helped you, star the upstream repository, share Mole, or open an issue or PR for Mole CLI there. [tw93/Mole](https://github.com/tw93/Mole) · [Share on 𝕏](https://x.com/intent/tweet?url=https://github.com/tw93/Mole&text=Mole%20-%20Deep%20clean%20and%20optimize%20your%20Mac.)
+- Treat tw93’s cats, TangYuan and Coke, to <a href="https://cats.tw93.fun?name=Mole" target="_blank">canned food 🥩</a>
 
 These lovely people already did 🐱
 

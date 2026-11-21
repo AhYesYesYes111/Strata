@@ -1,30 +1,41 @@
 # Strata
 
-[English](README.md)
+Strata 是一款原生 macOS 应用。你可以看清哪些文件夹占用了磁盘空间，在清理前审阅候选项目，也能在窗口和菜单栏查看实时系统状态。界面采用 SwiftUI，支持简体中文和英语。
 
-Strata 是一款原生 macOS 工具，可以查出哪个文件夹占空间、预览可清理的文件，也可以找出正在占用 CPU 或内存的进程。这个分支在 `native/MoleDesktop` 中实现了 SwiftUI 界面，清理和维护功能使用随应用打包的 [Mole CLI](https://github.com/tw93/Mole) 脚本。
+[构建 Strata](#构建-strata) · [使用 Strata](#使用-strata) · [Mole CLI](#上游-mole-cli) · [English](README.md)
 
-## 构建并打开 Strata
+![Strata 的空间清理首页，显示本机存储用量和常用目录入口](docs/img/strata-clean-zh.png)
 
-在 Mac 上准备好 Python 3 和包含 macOS 26 或更新版 SDK 的 Apple 开发工具，然后在仓库根目录运行以下命令。
+## 构建 Strata
+
+应用支持 **macOS 13 及以上版本**。从源码构建需要 **Python 3** 和 **包含 macOS 26 或更新版 SDK 的 Apple 开发工具**。
 
 ```sh
+git clone https://github.com/AhYesYesYes111/Mole.git strata
+cd strata
 python3 native/MoleDesktop/build.py
 open native/MoleDesktop/build/Strata.app
 ```
 
-构建还会生成 `native/MoleDesktop/build/Strata.zip`。应用支持 macOS 13 及以上版本，处理器架构与构建用的 Mac 一致。
+如果已克隆仓库，在仓库根目录运行最后两条命令即可。脚本会按当前 Mac 的架构构建应用，进行本地签名，并生成 `native/MoleDesktop/build/Strata.zip`。
 
-- **磁盘分析**用色块显示各目录的空间占用。点击大色块可以逐层查看里面的文件。
-- **空间清理**先生成可搜索的预览报告。确认后会执行整轮清理，符合条件的文件可能被永久删除，包括个人废纸篓中的内容。筛选报告只影响显示范围。
-- **应用**可以搜索已安装的软件并在访达中定位。**维护**可以预览 Mole 将执行的任务。
-- **状态**显示 CPU、内存和网络活动，也可以按名称或 PID 查找进程。
+## 使用 Strata
 
-界面支持简体中文和英语。权限设置、快捷键和报告导出见[桌面使用指南](native/MoleDesktop/README.md)。[许可证与项目归属](LICENSES.md)
+| 页面 | 可以做什么 |
+| --- | --- |
+| **磁盘分析** | 浏览启动盘或选择一个文件夹。点击色块逐层查看空间占用，也可以重新扫描来刷新上次的结果。 |
+| **空间清理** | 先扫描缓存、日志和卸载残留，估算可回收空间。报告可搜索，也可导出为文本。 |
+| **状态** | 查看 CPU、内存、磁盘读写、网络和电池。可搜索和排序进程，也可在菜单栏快速查看概况。 |
+| **应用** | 搜索已安装的软件、查看版本，并在访达中定位。 |
+| **维护** | 预览系统维护任务，查看哪些任务会被跳过及其原因。 |
+
+> **确认清理前，请先审阅报告。** 搜索仅筛选报告的显示内容。确认后，Mole 会重新扫描，并按当前保护规则执行整轮清理。符合条件的项目会被永久删除，个人废纸篓默认也会清空。
+
+需要测量受 macOS 保护的目录时，可从右上角的**授权**进入「完全磁盘访问权限」设置。权限、快捷键、报告导出和测试命令见桌面使用指南。[桌面使用指南](native/MoleDesktop/README.md) · [桌面应用源码](native/MoleDesktop/Sources)
 
 ## 上游 Mole CLI
 
-以下是 tw93 和贡献者维护的命令行工具使用指南。下方的安装脚本和 Homebrew 命令用于安装 CLI。上游另行发布的桌面应用是 [Mole Mac](https://mole.fit/)。
+Strata 内置了 Mole CLI 的清理和维护脚本。Mole CLI 是由 tw93 和贡献者维护的命令行工具，可通过下方的安装脚本或 Homebrew 单独安装。上游也发布了自己的桌面应用 Mole Mac。[Mole CLI 源码](https://github.com/tw93/Mole) · [Mole Mac](https://mole.fit/)
 
 <p>Mole CLI 使用指南 · <a href="README.md">English</a> · 中文 · <a href="README_TW.md">繁體</a> · <a href="README_JA.md">日本語</a> · <a href="README_KR.md">한국어</a> · <a href="README_DE.md">Deutsch</a> · <a href="README_FR.md">Français</a> · <a href="README_PL.md">Polski</a> · <a href="README_PT-BR.md">Português</a> · <a href="README_UA.md">Українська</a> · <a href="README_RU.md">Русский</a></p>
 
@@ -161,7 +172,7 @@ iwr -useb https://raw.githubusercontent.com/tw93/Mole/windows/quick-install.ps1 
 curl -fsSL https://raw.githubusercontent.com/tw93/Mole/linux/install.sh | bash
 ```
 
-Mole 只通过 Homebrew、这个仓库和 [mole.fit](https://mole.fit/) 发布，`molemac.com`、`moleapp.net`、`molefit.com` 都不是 Mole，`mole.bluecatbot.com` 上的 Windows App 是同名的社区项目。
+Mole 只通过 Homebrew、[上游 GitHub 仓库](https://github.com/tw93/Mole)和 [mole.fit](https://mole.fit/) 发布，`molemac.com`、`moleapp.net`、`molefit.com` 都不是 Mole，`mole.bluecatbot.com` 上的 Windows App 是同名的社区项目。
 
 ## 安全机制
 
@@ -503,7 +514,7 @@ Raycast 装好后要手动设置一次：
 
 ## 社区反馈
 
-感谢所有参与 Mole 开发与维护的贡献者，去关注一下他们吧 ❤️
+感谢所有参与上游 Mole 开发与维护的贡献者 ❤️
 
 <a href="https://github.com/tw93/Mole/graphs/contributors">
   <img src="./CONTRIBUTORS.svg?v=2" alt="Mole 贡献者" width="1000" />
@@ -518,9 +529,9 @@ Raycast 装好后要手动设置一次：
 
 ## 支持项目
 
-- 购买 [Mole for Mac](https://mole.fit) 是支持 Mole 持续开发最直接的方式
-- 如果 Mole 帮到了你，欢迎点个 Star、[分享给朋友](https://x.com/intent/tweet?url=https://github.com/tw93/Mole&text=Mole%20-%20Deep%20clean%20and%20optimize%20your%20Mac.)，或在 GitHub 提交 Issue 和 PR
-- 我养了两只猫，汤圆和可乐，如果 Mole 用着顺手，欢迎投喂她们一顿 <a href="https://cats.tw93.fun?name=Mole" target="_blank">罐头 🥩</a>
+- 购买 Mole Mac 可以支持上游持续开发。[Mole Mac](https://mole.fit/)
+- 如果 Mole 帮到了你，欢迎分享给朋友，到上游仓库点 Star，或提交与 Mole CLI 有关的 Issue 和 PR。[tw93/Mole](https://github.com/tw93/Mole) · [分享到 𝕏](https://x.com/intent/tweet?url=https://github.com/tw93/Mole&text=Mole%20-%20Deep%20clean%20and%20optimize%20your%20Mac.)
+- 也可以给 tw93 的两只猫汤圆和可乐投喂一顿 <a href="https://cats.tw93.fun?name=Mole" target="_blank">罐头 🥩</a>
 
 已经投喂的好心人 🐱
 
