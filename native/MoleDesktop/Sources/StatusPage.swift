@@ -77,9 +77,15 @@ struct ResourceTrend {
     static let duration: TimeInterval = 60
     static let longestInterval: TimeInterval = 5
     private(set) var samples: [ResourceSample] = []
+    private var leading: [ResourceSample] = []
 
     mutating func append(_ sample: ResourceSample) {
-        if let last = samples.last, last.date >= sample.date { samples.removeAll(keepingCapacity: true) }
+        if let last = samples.last, last.date >= sample.date {
+            samples.removeAll(keepingCapacity: true)
+            leading.removeAll(keepingCapacity: true)
+        }
+        leading += samples.prefix { sample.date.timeIntervalSince($0.date) > Self.duration }
+        leading.removeAll { sample.date.timeIntervalSince($0.date) > Self.duration + 2 * Self.longestInterval }
         samples.removeAll { sample.date.timeIntervalSince($0.date) > Self.duration }
         samples.append(sample)
         // The 2-second sampler normally supplies 31 points including the two endpoints.
@@ -94,12 +100,20 @@ struct ResourceTrend {
         var id: Date { date }
     }
 
-    func points(for metric: KeyPath<ResourceSample, Double?>, upperBound: Double = 1, sameLink: Bool = false) -> [Point] {
+    var playbackInterval: TimeInterval? {
+        guard samples.count >= 2 else { return nil }
+        let step = samples[samples.count - 1].date.timeIntervalSince(samples[samples.count - 2].date)
+        return step > 0 && step <= Self.longestInterval ? step : nil
+    }
+
+    func points(for metric: KeyPath<ResourceSample, Double?>, upperBound: Double = 1, sameLink: Bool = false,
+                includeLeading: Bool = false) -> [Point] {
         guard let latest = samples.last, upperBound.isFinite, upperBound > 0 else { return [] }
         var points: [Point] = []
         var previous: Date?
         var segment = 0
-        let relevant = sameLink ? samples.suffix(from: samples.lastIndex(where: { $0.interface != latest.interface }).map { $0 + 1 } ?? 0) : samples[...]
+        let window = includeLeading ? leading + samples : samples
+        let relevant = sameLink ? window.suffix(from: window.lastIndex(where: { $0.interface != latest.interface }).map { $0 + 1 } ?? 0) : window[...]
         for sample in relevant {
             guard let value = sample[keyPath: metric], value.isFinite, value >= 0 else {
                 previous = nil
@@ -108,8 +122,9 @@ struct ResourceTrend {
             if previous.map({ sample.date.timeIntervalSince($0) > Self.longestInterval }) ?? true {
                 segment += 1
             }
+            let fraction = value / upperBound
             points.append(Point(date: sample.date, offset: sample.date.timeIntervalSince(latest.date),
-                                percent: min(value / upperBound, 1) * 100, segment: segment))
+                                percent: (includeLeading && sameLink ? fraction : min(fraction, 1)) * 100, segment: segment))
             previous = sample.date
         }
         return points
@@ -338,14 +353,52 @@ struct MetricTrace: View {
     let points: [ResourceTrend.Point]
     let color: Color
     var baseline = true
+    var sampleTime: Date?
+    var interval: TimeInterval?
+    var upperBound: Double = 1
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var phase
+
+    var body: some View {
+        let end = sampleTime?.timeIntervalSinceReferenceDate
+        let canvas = TraceCanvas(points: points, color: color, baseline: baseline, sampleEnd: end,
+                                 windowEnd: end ?? 0, targetBound: upperBound, displayedBound: upperBound)
+        if !reduceMotion, phase == .active, let interval {
+            canvas.animation(.linear(duration: interval), value: end)
+        } else {
+            canvas
+        }
+    }
+}
+
+struct TraceCanvas: View, Animatable {
+    let points: [ResourceTrend.Point]
+    let color: Color
+    let baseline: Bool
+    let sampleEnd: TimeInterval?
+    var windowEnd: TimeInterval
+    let targetBound: Double
+    var displayedBound: Double
+
+    var animatableData: AnimatablePair<Double, Double> {
+        get { AnimatablePair(windowEnd, displayedBound) }
+        set { windowEnd = newValue.first; displayedBound = newValue.second }
+    }
+
+    func position(of point: ResourceTrend.Point, in size: CGSize) -> CGPoint {
+        let lag = (sampleEnd ?? windowEnd) - windowEnd
+        let fraction = point.percent / 100 * targetBound / displayedBound
+        return CGPoint(x: (1 + (point.offset + lag) / ResourceTrend.duration) * (size.width - 2) + 1,
+                       y: (1 - fraction) * (size.height - 3) + 1.5)
+    }
 
     var body: some View {
         Canvas { context, size in
+            context.clip(to: Path(CGRect(origin: .zero, size: size)))
             var path = Path()
             var segment: Int?
             for point in points {
-                let p = CGPoint(x: (1 + point.offset / ResourceTrend.duration) * (size.width - 2) + 1,
-                                y: (1 - point.percent / 100) * (size.height - 3) + 1.5)
+                let p = position(of: point, in: size)
                 if segment == point.segment { path.addLine(to: p) }
                 else {
                     path.move(to: p)
@@ -380,58 +433,9 @@ func memorySize(_ bytes: UInt64) -> String {
     return gibibytes.formatted(.number.locale(AppLanguage.current.locale).precision(.fractionLength(0...1))) + " GiB"
 }
 
-// A vector illustration of a silicon package. Its traces are artwork; live metrics sit outside it.
-private struct ChipArtwork: View {
-    var body: some View {
-        Canvas { ctx, size in
-            let unit = min(size.width / 178, size.height / 130)
-            ctx.translateBy(x: size.width * 0.52, y: size.height * 0.48)
-            ctx.scaleBy(x: unit, y: unit)
-            func point(_ x: Double, _ y: Double, lift: Double = 0) -> CGPoint {
-                CGPoint(x: x * 0.93 - y * 0.63, y: x * 0.21 + y * 0.66 + lift)
-            }
-            func shape(_ pts: [CGPoint]) -> Path {
-                var path = Path()
-                path.addLines(pts)
-                path.closeSubpath()
-                return path
-            }
-            func plate(_ x: Double, _ y: Double, _ w: Double, _ h: Double, lift: Double = 0) -> Path {
-                shape([point(x, y, lift: lift), point(x + w, y, lift: lift),
-                       point(x + w, y + h, lift: lift), point(x, y + h, lift: lift)])
-            }
-            for position in stride(from: -32.0, through: 32, by: 4) {
-                for sign in [-1.0, 1.0] {
-                    let end = 62 + abs(position) / 3
-                    var pins = Path()
-                    pins.move(to: point(position, sign * 37))
-                    pins.addLine(to: point(position, sign * end))
-                    pins.move(to: point(sign * 37, position))
-                    pins.addLine(to: point(sign * end, position))
-                    ctx.stroke(pins, with: .color(jade.opacity(0.24)), lineWidth: 1.1)
-                }
-            }
-            for depth in stride(from: 6, through: 0, by: -1) {
-                let body = plate(-39, -39, 78, 78, lift: Double(depth))
-                let fill = depth == 0 ? Color(red: 0.20, green: 0.37, blue: 0.36) : Color(red: 0.10, green: 0.22, blue: 0.20)
-                ctx.fill(body, with: .color(fill))
-            }
-            ctx.stroke(plate(-39, -39, 78, 78), with: .color(jade.opacity(0.68)), lineWidth: 1.0)
-            ctx.fill(plate(-34, -34, 68, 68), with: .color(Color(red: 0.075, green: 0.15, blue: 0.17)))
-            for row in 0..<4 {
-                for column in 0..<4 {
-                    let block = plate(-27 + Double(column) * 14, -27 + Double(row) * 14, 11.5, 11.5)
-                    let brightness = 0.20 + Double((row * 3 + column * 7) % 8) * 0.055
-                    ctx.fill(block, with: .color(jade.opacity(brightness)))
-                    ctx.stroke(block, with: .color(jade.opacity(0.35)), lineWidth: 0.6)
-                }
-            }
-        }.accessibilityHidden(true)
-    }
-}
-
 struct StatusBoard: View {
     @Environment(\.locale) private var locale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let readings: StatusReadings
     var processes: [ProcessReading] = []
     var didSampleProcesses = false
@@ -510,13 +514,9 @@ struct StatusBoard: View {
             VStack(alignment: .leading, spacing: 4) {
                 headline(tr("健康", "Health"), "sun.max", color: jade, badge: readings.chip)
                 Spacer(minLength: 1)
-                HStack(spacing: 0) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        metricValue(readings.health.map { String($0.score) } ?? "—", unit: readings.health?.label ?? "")
-                        caption(readings.health?.cause.label ?? tr("正在采样…", "Sampling…"))
-                    }
-                    Spacer(minLength: 0)
-                    ChipArtwork().frame(width: 61, height: 47)
+                VStack(alignment: .leading, spacing: 2) {
+                    metricValue(readings.health.map { String($0.score) } ?? "—", unit: readings.health?.label ?? "")
+                    caption(readings.health?.cause.label ?? tr("正在采样…", "Sampling…"))
                 }
                 Spacer(minLength: 1)
                 caption(tr("运行 ", "Up ") + statusUptime(readings.uptime) + " · " + thermalDescription)
@@ -536,6 +536,14 @@ struct StatusBoard: View {
 
     private enum Usage { case cpu, gpu, memory }
 
+    private func trace(_ key: KeyPath<ResourceSample, Double?>, color: Color, peak: Double = 1,
+                       sameLink: Bool = false, baseline: Bool = true) -> some View {
+        let history = readings.trend
+        return MetricTrace(points: history.points(for: key, upperBound: peak, sameLink: sameLink, includeLeading: true),
+                           color: color, baseline: baseline, sampleTime: history.samples.last?.date,
+                           interval: history.playbackInterval, upperBound: peak)
+    }
+
     private func usage(_ kind: Usage) -> some View {
         let sensor = readings.sensors
         let title = kind == .cpu ? "CPU" : kind == .gpu ? "GPU" : tr("内存", "Memory")
@@ -544,7 +552,6 @@ struct StatusBoard: View {
         let fraction = readings.trend.samples.last?[keyPath: key]
         let temperature = kind == .cpu ? sensor.cpuCelsius : sensor.gpuCelsius
         let badge = kind == .memory ? readings.vitals.pressure?.label : temperature.map { "\(Int($0.rounded()))°C" }
-        let points = readings.trend.points(for: key)
         return StatusTile(tint: color) {
             VStack(alignment: .leading, spacing: 4) {
                 headline(title, kind == .cpu ? "cpu" : kind == .gpu ? "display" : "memorychip", color: color, badge: badge)
@@ -559,16 +566,17 @@ struct StatusBoard: View {
                                         if let fraction = readings.usageByCore[i] {
                                             RoundedRectangle(cornerRadius: 1.5).fill(color.gradient)
                                                 .frame(height: max(1, 21 * fraction))
+                                                .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: fraction)
                                         } else { Color.clear.frame(height: 1) }
                                     }
                                 }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                            } else { MetricTrace(points: points, color: color) }
+                            } else { trace(key, color: color) }
                         }.contentShape(Rectangle())
                     }
                     .buttonStyle(.plain).frame(height: 22)
                     .help(showCores ? tr("每条代表一个核心。点按查看 60 秒趋势。", "Each bar is one core. Click for the 60-second trend.") : tr("点按查看各核心使用率", "Click to show usage by core"))
                     .accessibilityLabel(tr("切换核心读数和 CPU 历史", "Switch between CPU cores and history"))
-                } else { MetricTrace(points: points, color: color).frame(height: 22) }
+                } else { trace(key, color: color).frame(height: 22) }
                 Spacer(minLength: 1)
                 caption(usageDetail(kind))
             }
@@ -622,7 +630,10 @@ struct StatusBoard: View {
     private func gauge(_ value: Double?, _ tint: Color) -> some View {
         GeometryReader { rect in
             Capsule().fill(tint.opacity(0.12)).overlay(alignment: .leading) {
-                if let value { Capsule().fill(tint).frame(width: rect.size.width * min(1, max(0, value))) }
+                if let value {
+                    Capsule().fill(tint).frame(width: rect.size.width * min(1, max(0, value)))
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: value)
+                }
             }
         }.frame(height: 5)
     }
@@ -651,8 +662,8 @@ struct StatusBoard: View {
                 Spacer(minLength: 1)
                 metricValue(statusRate(readings.throughput?.down))
                 ZStack {
-                    MetricTrace(points: history.points(for: \.down, upperBound: peak, sameLink: true), color: sky)
-                    MetricTrace(points: history.points(for: \.up, upperBound: peak, sameLink: true), color: jade, baseline: false)
+                    trace(\.down, color: sky, peak: peak, sameLink: true)
+                    trace(\.up, color: jade, peak: peak, sameLink: true, baseline: false)
                 }.frame(height: 21)
                 Spacer(minLength: 0)
                 caption(tr("↑ 上传 ", "↑ Upload ") + statusRate(readings.throughput?.up)

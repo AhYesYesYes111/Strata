@@ -2,13 +2,12 @@ import AppKit
 import SwiftUI
 
 enum StrataColor {
-    static let paper = Color(red: 0.071, green: 0.075, blue: 0.079)
-    static let panel = Color(red: 0.122, green: 0.127, blue: 0.133)
-    static let rail = Color(red: 0.081, green: 0.094, blue: 0.092)
-    static let ink = Color(red: 0.955, green: 0.955, blue: 0.944)
-    static let muted = Color(red: 0.708, green: 0.719, blue: 0.714)
-    static let accent = Color(red: 0.558, green: 0.804, blue: 0.710)
-    static let mint = Color(red: 0.719, green: 0.913, blue: 0.817)
+    static let paper = Color(white: 0.065)
+    static let panel = Color(white: 0.125)
+    static let rail = Color(white: 0.085)
+    static let ink = Color(white: 0.96)
+    static let muted = Color(white: 0.74)
+    static let accent = Color(white: 0.90)
     static let border = Color.white.opacity(0.115)
 }
 
@@ -43,7 +42,7 @@ struct ActionStyle: ButtonStyle {
         configuration.label.font(.system(size: 13, weight: .semibold))
             .padding(.horizontal, 15).padding(.vertical, 9)
             .foregroundColor(isPrimary ? StrataColor.rail : StrataColor.ink)
-            .background(isPrimary ? StrataColor.mint : Color.white.opacity(0.045), in: shape)
+            .background(isPrimary ? StrataColor.ink : Color.white.opacity(0.045), in: shape)
             .overlay(shape.strokeBorder(isPrimary ? Color.clear : StrataColor.border, lineWidth: 0.75))
             .contentShape(shape)
             .opacity(isEnabled ? (configuration.isPressed ? 0.76 : 1) : 0.42)
@@ -81,10 +80,10 @@ struct VolumeReading {
     }
 }
 
-struct NavigationPlanet: View {
+struct NavigationContour: View {
     var body: some View {
         Canvas { context, size in
-            context.withCGContext { PlanetMark.draw(in: $0, rect: CGRect(origin: .zero, size: size)) }
+            context.withCGContext { ContourMark.draw(in: $0, rect: CGRect(origin: .zero, size: size)) }
         }.accessibilityHidden(true)
     }
 }

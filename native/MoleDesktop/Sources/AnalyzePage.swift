@@ -6,16 +6,20 @@ final class DiskModel: ObservableObject {
     @Published private(set) var location: URL?
     @Published private(set) var inventory: DiskScanResult?
     @Published private(set) var result: DiskScanResult?
+    var displayedResult: DiskScanResult? { inventory ?? result }
     @Published private var failure: ScanFailure?
     var message: String? { failure?.description }
 
     private enum ScanFailure {
         case cancelled
+        case save
         case selectFolder
         case read(NSError)
 
         var description: String {
             switch self {
+            case .save:
+                return tr("结果仅在本次打开时可用；无法保存快照。", "This result is available for this session only; the snapshot could not be saved.")
             case .selectFolder:
                 return tr("请通过「选择文件夹」分析此位置。", "Use Choose Folder to measure this location.")
             case .cancelled:
@@ -46,6 +50,9 @@ final class DiskModel: ObservableObject {
     private(set) var wholeDisk = false
 
     private var selectedFolder: URL?
+    private let snapshots: DiskSnapshots
+
+    init(snapshots: DiskSnapshots = .shared) { self.snapshots = snapshots }
     var needsFolderSelection: Bool {
         if case .selectFolder = failure { return true }
         return false
@@ -65,7 +72,8 @@ final class DiskModel: ObservableObject {
     }
 
     func enter(_ url: URL) {
-        guard let observed = result ?? inventory,
+        guard !needsMusicSelection(url) else { return }
+        guard let observed = displayedResult,
               observed.entries.contains(where: { $0.isDirectory && !$0.requiresSelection && $0.url == url }) else { return }
         if let result {
             ancestors.append(result)
@@ -75,9 +83,13 @@ final class DiskModel: ObservableObject {
         if let cached = observed.children[url] {
             cancel()
             location = url
-            result = DiskScanResult(root: url, entries: cached, isPartial: false)
+            result = DiskScanResult(root: url, entries: cached, isPartial: false, measuredAt: observed.measuredAt)
             failure = nil
         } else { load(url) }
+    }
+
+    func needsMusicSelection(_ url: URL) -> Bool {
+        DiskScanPrivacy().needsSelection(url, selectedFolder: selectedFolder, musicOnly: true)
     }
 
     func back() {
@@ -103,14 +115,14 @@ final class DiskModel: ObservableObject {
 
     func refresh() {
         if wholeDisk { startupVolume = VolumeReading.read() }
-        if let location { load(location) }
+        if let location { load(location, refresh: true) }
     }
 
     func cancel() {
         request = UUID()
         work?.cancel()
         work = nil
-        if running, let inventory { result = inventory }
+        if running, result == nil, let inventory { result = inventory }
         inventory = nil
         scanningName = nil
         if running {
@@ -119,21 +131,37 @@ final class DiskModel: ObservableObject {
         }
     }
 
-    private func load(_ url: URL) {
+    private func load(_ url: URL, refresh: Bool = false) {
         work?.cancel()
         let ticket = UUID()
         request = ticket
         location = DiskScanner.directoryURL(url)
-        result = nil
+        if !refresh || result?.measuredAt == nil { result = nil }
         inventory = nil
         failure = nil
         scanningName = nil
         running = true
         let scanStartup = wholeDisk
         let selection = selectedFolder
+        let scope = DiskSnapshots.Scope(root: DiskScanner.directoryURL(url), wholeDisk: scanStartup, selection: selection)
         work = Task { [self] in
+            defer {
+                if request == ticket {
+                    running = false
+                    inventory = nil
+                    scanningName = nil
+                    work = nil
+                }
+            }
+            if !refresh, !DiskScanPrivacy().needsSelection(scope.root, selectedFolder: selection),
+               let saved = await snapshots.read(scope) {
+                guard request == ticket, !Task.isCancelled else { return }
+                result = saved
+                return
+            }
+            guard request == ticket, !Task.isCancelled else { return }
             do {
-                let report = try await DiskScanner.scan(url, wholeDisk: scanStartup, selectedFolder: selection, onInventory: { snapshot in
+                var report = try await DiskScanner.scan(url, wholeDisk: scanStartup, selectedFolder: selection, onInventory: { snapshot in
                     Task { @MainActor in
                         guard self.running, self.request == ticket, snapshot.sequence > (self.inventory?.sequence ?? 0) else { return }
                         self.inventory = snapshot
@@ -144,16 +172,18 @@ final class DiskModel: ObservableObject {
                         self.scanningName = name
                     }
                 }
-                guard !Task.isCancelled else { return }
+                guard request == ticket, !Task.isCancelled else { return }
+                report.measuredAt = Date()
+                inventory = report
                 result = report
+                do { try await snapshots.save(report, for: scope) }
+                catch {
+                    if request == ticket, !Task.isCancelled { failure = .save }
+                }
             } catch {
-                guard !Task.isCancelled else { return }
+                guard request == ticket, !Task.isCancelled else { return }
                 failure = error is DiskScanAccessError ? .selectFolder : .read(error as NSError)
             }
-            running = false
-            inventory = nil
-            scanningName = nil
-            work = nil
         }
     }
 }
@@ -213,8 +243,7 @@ struct AnalyzePage: View {
     @State private var options = DiskListOptions()
     @State private var tileOffset = 0
     @State private var hovered: URL?
-
-    private let warm = Color(red: 0.91, green: 0.74, blue: 0.55)
+    @State private var selectedTile: URL?
 
     var body: some View {
         let _ = locale
@@ -267,10 +296,10 @@ struct AnalyzePage: View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(spacing: 11) {
                 Image(systemName: "internaldrive").font(.system(size: 23, weight: .medium))
-                    .foregroundStyle(warm)
+                    .foregroundStyle(StrataColor.accent)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(tr("磁盘分析", "Disk usage")).font(.system(size: 21, weight: .semibold))
-                    if let result = model.result ?? model.inventory {
+                    if let result = model.displayedResult {
                         Text(tr("\(result.entries.count) 项", result.entries.count == 1 ? "1 item" : "\(result.entries.count) items") + " · " + measuredSize(result.totalBytes, partial: result.isPartial))
                             .lineLimit(1).minimumScaleFactor(0.8).monospacedDigit()
                             .font(.caption).foregroundStyle(StrataColor.muted)
@@ -279,12 +308,16 @@ struct AnalyzePage: View {
                     }
                 }
             }.padding(.top, 4)
+            if let date = model.displayedResult?.measuredAt {
+                Text(tr("上次扫描：", "Last scan: ") + date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale)))
+                    .font(.caption).foregroundStyle(StrataColor.muted)
+            }
             if model.wholeDisk, let volume = model.startupVolume, model.location?.path == "/" {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(tr("磁盘已用", "Disk used")).font(.caption).foregroundStyle(StrataColor.muted)
                     Text(storageSize(volume.used) + " / " + storageSize(volume.capacity))
                         .font(.system(size: 12, weight: .medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
-                    ProgressView(value: volume.fraction).progressViewStyle(.linear).tint(warm)
+                    ProgressView(value: volume.fraction).progressViewStyle(.linear).tint(StrataColor.accent)
                 }.help(tr("系统报告的启动磁盘占用。文件总量按可读取的目录单独测量。",
                           "Startup disk usage reported by macOS. File totals are measured separately in readable folders."))
             }
@@ -314,7 +347,7 @@ struct AnalyzePage: View {
                         .font(.caption)
                 }.menuStyle(.borderlessButton).fixedSize().help(tr("筛选与排序", "Filter & sort"))
             }
-            if let result = model.result ?? model.inventory {
+            if let result = model.displayedResult {
                 entries(result)
             } else {
                 Spacer()
@@ -336,7 +369,7 @@ struct AnalyzePage: View {
                         Button { open(entry) } label: {
                             HStack(spacing: 9) {
                                 Image(systemName: entry.requiresSelection ? "lock" : (entry.isDirectory ? "folder" : "doc"))
-                                    .frame(width: 18).foregroundStyle(warm)
+                                    .frame(width: 18).foregroundStyle(StrataColor.accent)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(verbatim: entry.name).font(.system(size: 13, weight: .medium))
                                         .lineLimit(1).truncationMode(.middle)
@@ -414,9 +447,12 @@ struct AnalyzePage: View {
     }
 
     @ViewBuilder private var mapContent: some View {
-        if let result = model.result ?? model.inventory, result.totalBytes > 0 {
-            TileMap(result: result, offset: tileOffset, hovered: hovered, open: open,
+        if let result = model.displayedResult, result.totalBytes > 0 {
+            TileMap(result: result, offset: tileOffset, nested: !model.history.isEmpty, hovered: hovered,
+                    selected: selectedTile, open: open,
                     more: { tileOffset += TileMap.pageSize }, hover: setHover)
+                .id(tileOffset)
+                .id(result.root)
         } else {
             VStack(spacing: 12) {
                 if model.running {
@@ -424,7 +460,7 @@ struct AnalyzePage: View {
                     Text(model.scanningName.map { tr("正在分析“\($0)”", "Scanning “\($0)”") } ?? tr("正在分析文件夹…", "Scanning folder…"))
                         .font(.headline).lineLimit(2)
                 } else {
-                    Image(systemName: "folder").font(.largeTitle).foregroundStyle(warm)
+                    Image(systemName: "folder").font(.largeTitle).foregroundStyle(StrataColor.accent)
                     Text(model.message ?? (model.result?.entries.isEmpty == true && model.result?.isPartial == false
                          ? tr("文件夹为空", "This folder is empty") : tr("没有已测得的分配空间", "No allocated space was measured"))).font(.headline)
                     if model.needsFolderSelection {
@@ -437,7 +473,8 @@ struct AnalyzePage: View {
     }
 
     private func open(_ entry: DiskEntry) {
-        if entry.requiresSelection { chooseFolder(startingAt: entry.url) }
+        selectedTile = entry.url
+        if entry.requiresSelection || model.needsMusicSelection(entry.url) { chooseFolder(startingAt: entry.url) }
         else if entry.isDirectory { model.enter(entry.url) }
         else { reveal(entry.url) }
     }
@@ -461,7 +498,7 @@ struct AnalyzePage: View {
         panel.treatsFilePackagesAsDirectories = true
         panel.canCreateDirectories = false
         panel.allowsMultipleSelection = false
-        panel.directoryURL = requested ?? model.location
+        panel.directoryURL = (requested ?? model.location).map { DiskScanPrivacy().pickerStart(for: $0) }
         if let window = NSApp.keyWindow {
             panel.beginSheetModal(for: window) { response in
                 if response == .OK, let url = panel.url { model.scan(url, userSelected: true) }
@@ -484,7 +521,7 @@ private struct MapItem: Identifiable {
         case remainder(Int)
     }
     let id: ID
-    let colorIndex: Int
+    let tone: TreemapTone
     let name: String
     let bytes: Int64
     let partial: Bool
@@ -497,32 +534,55 @@ private struct MapCell: Identifiable {
     var id: MapItem.ID { item.id }
 }
 
-private struct TileMap: View {
+struct TreemapTone: Equatable {
+    let rgb: Int
+    private static let categories = ["Users": 0x4A4B4F, "Applications": 0x3D3F43, "System": 0x44464A,
+                                     "private": 0x383A3E, "Library": 0x424448, "opt": 0x3C3E42]
+    static let gutter = Self(rgb: 0x171719)
+    static let outline = Self(rgb: 0xB7BAC1)
+
+    static func region(_ url: URL) -> Self {
+        var parts = url.path.split(separator: "/")[...]
+        if parts.starts(with: ["System", "Volumes", "Data"]) { parts = parts.dropFirst(3) }
+        let base = parts.first.flatMap { categories[String($0)] } ?? 0x404246
+        guard parts.count > 1, let name = parts.last else { return Self(rgb: base) }
+        let shift = name.utf8.reduce(0) { (31 * $0 + Int($1)) % 9 } - 4
+        return Self(rgb: base + shift * 0x010101)
+    }
+
+    func color(hovered: Bool = false) -> Color {
+        let factor = (hovered ? 1.11 : 1.0) / 255
+        return Color(.sRGB, red: Double(rgb >> 16) * factor,
+                     green: Double((rgb >> 8) & 255) * factor, blue: Double(rgb & 255) * factor)
+    }
+}
+
+struct TileMap: View {
     @Environment(\.locale) private var locale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.displayScale) private var displayScale
+    @FocusState private var focused: MapItem.ID?
+    @State private var hoveredRemainder = false
+    @State private var partition: TreemapLayout<MapItem.ID>.Partition?
     let result: DiskScanResult
     let offset: Int
+    let nested: Bool
     let hovered: URL?
+    let selected: URL?
     let open: (DiskEntry) -> Void
     let more: () -> Void
     let hover: (Bool, URL) -> Void
     static let pageSize = 12
 
-    private static let fills = [
-        Color(red: 0.54, green: 0.36, blue: 0.29), Color(red: 0.55, green: 0.39, blue: 0.19),
-        Color(red: 0.59, green: 0.32, blue: 0.23), Color(red: 0.36, green: 0.41, blue: 0.37),
-        Color(red: 0.40, green: 0.35, blue: 0.43), Color(red: 0.35, green: 0.42, blue: 0.49),
-        Color(red: 0.49, green: 0.39, blue: 0.32), Color(red: 0.38, green: 0.36, blue: 0.28)
-    ]
-
     private var items: [MapItem] {
         let positive = result.entries.prefix { $0.bytes > 0 }.dropFirst(offset)
         let shown = positive.prefix(Self.pageSize)
-        var tiles = shown.enumerated().map { i, entry in
-            MapItem(id: .entry(entry.url), colorIndex: entry.tileColorIndex ?? (offset + i), name: entry.name, bytes: entry.bytes, partial: entry.isPartial, entry: entry)
+        var tiles = shown.map { entry in
+            MapItem(id: .entry(entry.url), tone: TreemapTone.region(entry.url), name: entry.name, bytes: entry.bytes, partial: entry.isPartial, entry: entry)
         }
         let rest = positive.dropFirst(shown.count)
         if !rest.isEmpty {
-            tiles.append(MapItem(id: .remainder(offset), colorIndex: 0, name: tr("其余 \(rest.count) 项", "\(rest.count) more"),
+            tiles.append(MapItem(id: .remainder(offset), tone: TreemapTone.region(result.root), name: tr("其余 \(rest.count) 项", "\(rest.count) more"),
                                  bytes: rest.reduce(0) { $0 + $1.bytes }, partial: rest.contains(where: \.isPartial), entry: nil))
         }
         return tiles
@@ -532,68 +592,103 @@ private struct TileMap: View {
         let _ = locale
         let tiles = items
         GeometryReader { geometry in
+            let layout = TreemapLayout(tiles.map { (id: $0.id, bytes: $0.bytes) },
+                                       in: CGRect(origin: .zero, size: geometry.size), keeping: partition)
+            let cells = tiles.compactMap { item in layout.frames[item.id].map { MapCell(item: item, rect: $0) } }
             ZStack(alignment: .topLeading) {
-                ForEach(Self.layout(tiles[...], in: CGRect(origin: .zero, size: geometry.size))) { cell in
-                    let width = max(0, cell.rect.width - 2)
-                    let height = max(0, cell.rect.height - 2)
-                    tile(cell).frame(width: width, height: height)
-                        .clipShape(RoundedRectangle(cornerRadius: min(8, width / 5, height / 5)))
+                ForEach(cells) { cell in
+                    tile(cell.item)
+                        .frame(width: max(0, cell.rect.width - 3 / displayScale),
+                               height: max(0, cell.rect.height - 3 / displayScale))
+                        .transition(reduceMotion ? .identity : .opacity)
                         .position(x: cell.rect.midX, y: cell.rect.midY)
                 }
             }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .background(TreemapTone.gutter.color())
+            .animation(reduceMotion ? nil : .interactiveSpring(response: 0.55, dampingFraction: 1, blendDuration: 0.18),
+                       value: result.sequence)
+            .overlay(alignment: .topLeading) {
+                if let focused, let cell = cells.first(where: { $0.id == focused }) {
+                    focusTip(cell, in: geometry.size)
+                }
+            }
+            .onAppear { partition = layout.partition }
+            .onChange(of: layout.partition) { partition = $0 }
         }
     }
 
-    private func tile(_ cell: MapCell) -> some View {
-        let item = cell.item
-        let highlighted = item.entry != nil && hovered == item.entry?.url
-        let tileColor = item.entry == nil ? Color(red: 0.34, green: 0.34, blue: 0.34) : Self.fills[item.colorIndex % Self.fills.count]
+    private func detail(_ item: MapItem) -> String {
+        item.name + " · " + measuredSize(item.bytes, partial: item.partial)
+    }
+
+    private func focusTip(_ cell: MapCell, in viewport: CGSize) -> some View {
+        Text(verbatim: detail(cell.item))
+            .font(.caption).foregroundStyle(.white).lineLimit(3)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(TreemapTone.gutter.color(), in: RoundedRectangle(cornerRadius: 4))
+            .alignmentGuide(.leading) { tip in
+                -max(0, min(cell.rect.midX - tip.width / 2, viewport.width - tip.width))
+            }
+            .alignmentGuide(.top) { tip in
+                let below = cell.rect.maxY + 3
+                return -(below + tip.height <= viewport.height ? below : max(0, cell.rect.minY - tip.height - 3))
+            }
+            .allowsHitTesting(false).accessibilityHidden(true)
+    }
+
+    private func tile(_ item: MapItem) -> some View {
+        let highlighted = item.entry.map { hovered == $0.url } ?? hoveredRemainder
+        let isSelected = item.entry.map { selected == $0.url } ?? false
+        let icon = item.entry.map { $0.isDirectory ? "folder" : "doc" } ?? "square.grid.2x2"
+        let shape = RoundedRectangle(cornerRadius: (nested ? 4 : 8) / displayScale, style: .continuous)
         return Button {
             if let entry = item.entry { open(entry) } else { more() }
         } label: {
-            ZStack {
-                tileColor
-                if highlighted { Color.white.opacity(0.12) }
-                if cell.rect.width >= 28 && cell.rect.height >= 22 {
-                    VStack(spacing: 4) {
-                        let icon = item.entry.map { $0.isDirectory ? "folder" : "doc" } ?? "square.grid.2x2"
-                        if cell.rect.width >= 72 && cell.rect.height >= 48 {
+            shape.fill(item.tone.color(hovered: highlighted))
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: highlighted)
+                .overlay {
+                    ViewThatFits {
+                        VStack(spacing: 4) {
                             HStack(spacing: 5) {
                                 Image(systemName: icon)
-                                Text(verbatim: item.name).lineLimit(1).truncationMode(.middle)
-                            }.font(.system(size: cell.rect.width > 160 ? 15 : 12, weight: .semibold))
+                                Text(verbatim: item.name)
+                            }.font(.system(size: 13, weight: .semibold))
                             Text(measuredSize(item.bytes, partial: item.partial))
-                                .font(.system(size: 12, design: .rounded)).monospacedDigit().lineLimit(1)
-                        } else { Image(systemName: icon).font(.system(size: 12)) }
-                    }.padding(.horizontal, 5).foregroundStyle(.white)
+                                .font(.system(size: 12, design: .rounded)).monospacedDigit()
+                        }.fixedSize()
+                        Text(verbatim: item.name).font(.system(size: 12, weight: .semibold)).fixedSize()
+                        Image(systemName: icon).font(.system(size: 12)).fixedSize()
+                        Color.clear
+                    }.padding(5).foregroundStyle(.white)
                 }
-            }.contentShape(Rectangle())
-        }.buttonStyle(.plain)
-            .onHover { inside in if let entry = item.entry { hover(inside, entry.url) } }
-            .accessibilityLabel(item.name + tr("，", ", ") + measuredSize(item.bytes, partial: item.partial))
+                .clipShape(shape).contentShape(shape)
+        }.buttonStyle(TileSelectionStyle(shape: shape, outlined: isSelected || focused == item.id, width: 1.5 / displayScale))
+            .focused($focused, equals: item.id)
+            .onHover { inside in
+                if let entry = item.entry { hover(inside, entry.url) } else { hoveredRemainder = inside }
+            }
+            .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+            .accessibilityLabel(detail(item))
             .accessibilityHint(item.entry?.isDirectory == false ? tr("在访达中显示", "Show in Finder") : tr("打开并查看内容", "Open to explore contents"))
-            .help(item.name + " · " + measuredSize(item.bytes, partial: item.partial))
+            .help(detail(item))
             .contextMenu {
                 if let entry = item.entry { Button(tr("在访达中显示", "Show in Finder")) { reveal(entry.url) } }
             }
     }
 
-    // Bisect the longer axis by byte weight, retaining an exact area before visual gutters.
-    private static func layout(_ items: ArraySlice<MapItem>, in rect: CGRect) -> [MapCell] {
-        guard let first = items.first else { return [] }
-        guard items.count > 1 else { return [MapCell(item: first, rect: rect)] }
-        let total = items.reduce(0.0) { $0 + Double($1.bytes) }
-        var split = items.index(after: items.startIndex)
-        var leading = Double(first.bytes)
-        while split < items.index(before: items.endIndex) {
-            let next = leading + Double(items[split].bytes)
-            if abs(total / 2 - leading) <= abs(total / 2 - next) { break }
-            leading = next
-            items.formIndex(after: &split)
+    private struct TileSelectionStyle: ButtonStyle {
+        let shape: RoundedRectangle
+        let outlined: Bool
+        let width: CGFloat
+
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label.overlay {
+                if outlined || configuration.isPressed {
+                    shape.strokeBorder(TreemapTone.outline.color(), lineWidth: width).allowsHitTesting(false)
+                }
+            }
         }
-        let horizontal = rect.width >= rect.height
-        let length = horizontal ? rect.width : rect.height
-        let (a, b) = rect.divided(atDistance: length * (leading / total), from: horizontal ? .minXEdge : .minYEdge)
-        return layout(items[..<split], in: a) + layout(items[split...], in: b)
     }
+
 }

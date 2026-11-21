@@ -261,7 +261,7 @@ struct MenuDashboard: View {
             .frame(width: width, alignment: .trailing).contentShape(Rectangle())
         }
         .font(.system(size: 10, weight: .semibold))
-        .foregroundStyle(rankByCPU == cpu ? StrataColor.mint : StrataColor.muted)
+        .foregroundStyle(rankByCPU == cpu ? StrataColor.accent : StrataColor.muted)
         .buttonStyle(.plain)
         .help(tr("按" + text + "排序", "Rank by " + text))
         .accessibilityAddTraits(rankByCPU == cpu ? .isSelected : [])

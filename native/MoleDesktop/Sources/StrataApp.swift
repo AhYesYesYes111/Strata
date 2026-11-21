@@ -13,14 +13,6 @@ enum WorkspacePage: String, CaseIterable, Identifiable {
         case .system: return tr("状态", "Status")
         }
     }
-    var atmosphere: Color {
-        switch self {
-        case .clean: return Color(red: 0.133, green: 0.144, blue: 0.145)
-        case .software, .optimize, .system: return Color(white: 0.144)
-        case .analyze: return Color(red: 0.153, green: 0.144, blue: 0.133)
-        }
-    }
-
 }
 
 private enum AccessEntry: String, Identifiable {
@@ -105,9 +97,11 @@ struct WorkspaceView: View {
                 case .system: SystemPage()
                 }
             }.id(page).transition(.opacity).frame(maxWidth: .infinity, maxHeight: .infinity)
-        }.foregroundStyle(StrataColor.ink).tint(StrataColor.accent).background {
+        }.foregroundStyle(StrataColor.ink).tint(StrataColor.accent)
+        .modifier(ContourArtwork(enabled: page == .clean))
+        .background {
             LinearGradient(stops: [
-                .init(color: page.atmosphere, location: 0),
+                .init(color: Color(white: 0.13), location: 0),
                 .init(color: StrataColor.paper, location: 0.68)
             ], startPoint: .topLeading, endPoint: .bottomTrailing)
         }
@@ -133,7 +127,7 @@ struct WorkspaceView: View {
             }.pickerStyle(.inline)
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: "globe").font(.system(size: 14, weight: .medium))
+                NavigationContour().frame(width: 16, height: 16)
                 Text(verbatim: language.resolved == .chinese ? "中文" : "EN")
                     .font(.system(size: 11, weight: .semibold))
             }
@@ -148,7 +142,7 @@ struct WorkspaceView: View {
 
     private var navigationBar: some View {
         HStack(spacing: 2) {
-            NavigationPlanet()
+            NavigationContour()
                 .frame(width: 25, height: 25)
                 .padding(.leading, 7).padding(.trailing, 4)
                 .accessibilityHidden(true).help("Strata")
@@ -163,7 +157,7 @@ struct WorkspaceView: View {
                         .foregroundStyle(selected ? Color.black.opacity(0.84) : StrataColor.ink.opacity(0.86))
                         .overlay(alignment: .topTrailing) {
                             if !selected && hasWork(section) {
-                                Circle().fill(StrataColor.mint).frame(width: 4, height: 4)
+                                Circle().fill(StrataColor.accent).frame(width: 4, height: 4)
                                     .padding([.top, .trailing], 5).accessibilityLabel(tr("运行中", "Running"))
                             }
                         }

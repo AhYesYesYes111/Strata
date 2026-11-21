@@ -32,7 +32,7 @@ struct Icon {
                 context.translateBy(x: 0, y: 512)
                 context.scaleBy(x: 1, y: -1)
                 context.beginTransparencyLayer(auxiliaryInfo: nil)
-                PlanetMark.draw(in: context, rect: CGRect(x: 57, y: 57, width: 398, height: 398))
+                ContourMark.draw(in: context, rect: CGRect(x: 57, y: 57, width: 398, height: 398))
                 context.endTransparencyLayer()
                 let file = "icon_\(points)x\(points)" + (scale == 2 ? "@2x" : "") + ".png"
                 let url = directory.appendingPathComponent(file)

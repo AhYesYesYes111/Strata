@@ -58,10 +58,9 @@ def build():
         run(*swift, "-O", *sorted((project / "Sources").glob("*.swift")), "-o", macos / "Strata")
         iconset = stage / "Strata.iconset"
         iconset.mkdir()
-        run(*swift, project / "Sources/PlanetMark.swift", project / "Packaging/Icon.swift", "-o", stage / "make-icon")
+        run(*swift, project / "Sources/ContourMark.swift", project / "Packaging/Icon.swift", "-o", stage / "make-icon")
         run(stage / "make-icon", iconset)
         run("iconutil", "-c", "icns", iconset, "-o", resources / "Strata.icns")
-        shutil.copyfile(project / "Resources/Earth.png", resources / "Earth.png")
         shutil.copy(repo / "mole", cli)
         shutil.copytree(repo / "lib", cli / "lib", copy_function=shutil.copy)
         for name in ("clean", "optimize"):

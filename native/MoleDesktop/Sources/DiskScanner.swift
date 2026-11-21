@@ -5,7 +5,7 @@ import System
 // Foundation path standardization can consult the filesystem to resolve links.
 private func lexicalPath(_ url: URL) -> String { FilePath(url.path).lexicallyNormalized().string }
 
-struct DiskEntry: Identifiable, Sendable {
+struct DiskEntry: Identifiable, Sendable, Codable {
     let url: URL
     let isDirectory: Bool
     var bytes: Int64
@@ -17,20 +17,25 @@ struct DiskEntry: Identifiable, Sendable {
     var name: String { url.lastPathComponent }
 }
 
-struct DiskScanResult: Sendable {
+struct DiskScanResult: Sendable, Codable {
     let root: URL
     let entries: [DiskEntry]
     let isPartial: Bool
     var children: [URL: [DiskEntry]] = [:]
     var pendingDirectories = 0
     var sequence = 0
+    var measuredAt: Date?
     var totalBytes: Int64 { entries.reduce(0) { $0 + $1.bytes } }
 }
 
 /// Decide from the parent listing alone. Even a metadata query inside a privacy
 /// boundary can cause a macOS access dialog before POSIX returns an error.
 struct DiskScanPrivacy: Sendable {
-    enum Context { case ordinary, home, library, applicationSupport }
+    enum Context { case ordinary, home, library, applicationSupport, serviceStorage }
+    private static let musicServices: Set<String> = [
+        "com.apple.music", "com.apple.itunes", "com.apple.itunescloud", "com.apple.itunescloudd",
+        "com.apple.amplibraryagent", "com.apple.ampartworkagent", "com.apple.medialibraryservice"
+    ]
     let currentHome: String
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
@@ -51,6 +56,9 @@ struct DiskScanPrivacy: Sendable {
         if path.hasSuffix(library), isHome(String(path.dropLast(library.count))) { return .library }
         let support = "/library/application support"
         if path.hasSuffix(support), isHome(String(path.dropLast(support.count))) { return .applicationSupport }
+        for suffix in ["/library/caches", "/library/httpstorages"] where path.hasSuffix(suffix) {
+            if isHome(String(path.dropLast(suffix.count))) { return .serviceStorage }
+        }
         return .ordinary
     }
 
@@ -59,14 +67,26 @@ struct DiskScanPrivacy: Sendable {
             (path.hasPrefix("/users/") && path != "/users/shared" && !path.dropFirst("/users/".count).contains("/"))
     }
 
+    private func isMusicBoundary(_ name: String, in context: Context) -> Bool {
+        if name.hasSuffix(".musiclibrary") || name.hasSuffix(".tvlibrary") || name.hasSuffix(".videoslibrary") { return true }
+        switch context {
+        case .home: return name == "music"
+        case .library, .applicationSupport:
+            return name == "music" || name == "itunes" || name == "medialibrary" || Self.musicServices.contains(name)
+        case .serviceStorage: return Self.musicServices.contains(name)
+        case .ordinary: return false
+        }
+    }
+
     func isBoundary(_ name: String, in context: Context) -> Bool {
         let name = name.lowercased()
+        if isMusicBoundary(name, in: context) { return true }
         // A Photos library can be renamed or moved outside Pictures.
         if name.hasSuffix(".photoslibrary") || name.hasSuffix(".photolibrary") ||
-            name.hasSuffix(".aplibrary") || name.hasSuffix(".musiclibrary") { return true }
+            name.hasSuffix(".aplibrary") { return true }
         switch context {
         case .home:
-            return ["desktop", "documents", "downloads", "pictures", "movies", "music", ".trash"].contains(name)
+            return ["desktop", "documents", "downloads", "pictures", "movies", ".trash"].contains(name)
         case .library:
             return ["containers", "group containers", "daemon containers", "cloudstorage", "mobile documents",
                     "mail", "messages", "safari", "calendars", "reminders", "homekit", "photos", "cookies",
@@ -74,18 +94,19 @@ struct DiskScanPrivacy: Sendable {
         case .applicationSupport:
             return ["addressbook", "callhistorydb", "callhistorytransactions", "mobilesync",
                     "com.apple.tcc", "knowledge", "fileprovider"].contains(name)
-        case .ordinary: return false
+        case .ordinary, .serviceStorage: return false
         }
     }
 
-    func needsSelection(_ url: URL, selectedFolder: URL?) -> Bool {
+    func needsSelection(_ url: URL, selectedFolder: URL?, musicOnly: Bool = false) -> Bool {
         let path = Self.logicalPath(lexicalPath(url))
         let selection = selectedFolder.map { Self.logicalPath(lexicalPath($0)) }
         var parent = ""
         for part in path.split(separator: "/") {
             let name = String(part)
             let child = parent + "/" + name
-            if isBoundary(name, in: context(for: parent)) {
+            let context = context(for: parent)
+            if musicOnly ? isMusicBoundary(name.lowercased(), in: context) : isBoundary(name, in: context) {
                 // Selecting an enclosing directory does not authorize additional
                 // protected roots below it. Selecting a particular subtree does.
                 guard let selection, selection == child || selection.hasPrefix(child + "/"),
@@ -94,6 +115,14 @@ struct DiskScanPrivacy: Sendable {
             parent = child
         }
         return false
+    }
+
+    func pickerStart(for requested: URL) -> URL {
+        var directory = requested
+        while needsSelection(directory, selectedFolder: nil, musicOnly: true) {
+            directory = directory.deletingLastPathComponent()
+        }
+        return directory
     }
 }
 

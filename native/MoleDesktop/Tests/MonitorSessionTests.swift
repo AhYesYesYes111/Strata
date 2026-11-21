@@ -1,10 +1,12 @@
 import Combine
 import Foundation
+import SwiftUI
 
 @main
 enum MonitorSessionTests {
     @MainActor
     static func main() async throws {
+        testTracePlayback()
         let monitor = MonitorSession()
         let window = UUID()
         var statusUpdates = 0
@@ -45,7 +47,44 @@ enum MonitorSessionTests {
         precondition(monitor.readings.trend.samples.contains { $0.date == lastDate }, "Keep the recent graph across a brief pause")
         monitor.stopMenu()
         withExtendedLifetime((statusSubscription, processSubscription)) {}
-        print("PASS shared sampling, cancellation, pause and resume")
+        print("PASS continuous trace playback, gaps, scale changes, shared sampling, cancellation, pause and resume")
+    }
+
+    @MainActor
+    static func testTracePlayback() {
+        var history = ResourceTrend()
+        func sample(_ second: Int, _ value: Double?, link: String = "en0") -> ResourceSample {
+            ResourceSample(date: Date(timeIntervalSinceReferenceDate: Double(second)), cpu: value,
+                           memory: nil, down: value, interface: link)
+        }
+        for second in stride(from: 0, through: 62, by: 2) {
+            history.append(sample(second, second == 0 ? 100 : 20))
+        }
+        precondition(history.playbackInterval == 2 && history.samples.first?.date.timeIntervalSinceReferenceDate == 2)
+        let points = history.points(for: \.down, upperBound: 20, sameLink: true, includeLeading: true)
+        let size = CGSize(width: 602, height: 103)
+        var canvas = TraceCanvas(points: points, color: .white, baseline: false, sampleEnd: 62,
+                                 windowEnd: 60, targetBound: 20, displayedBound: 100)
+        let oldest = points.first!, newest = points.last!
+        precondition(oldest.date.timeIntervalSinceReferenceDate == 0)
+        precondition(abs(canvas.position(of: oldest, in: size).y - 1.5) < 0.001)
+        let start = canvas.position(of: newest, in: size)
+        canvas.animatableData = AnimatablePair(61, 60)
+        let middle = canvas.position(of: newest, in: size)
+        canvas.animatableData = AnimatablePair(62, 20)
+        let end = canvas.position(of: newest, in: size)
+        precondition(abs(middle.x - (start.x + end.x) / 2) < 0.001 && start.x > middle.x && middle.x > end.x)
+        precondition(start.y > middle.y && middle.y > end.y)
+        history.append(sample(64, nil))
+        history.append(sample(66, 10))
+        let broken = history.points(for: \.down, upperBound: 20, sameLink: true, includeLeading: true)
+        precondition(broken.last!.segment != broken.dropLast().last!.segment)
+        history.append(sample(68, 15, link: "en1"))
+        precondition(history.points(for: \.down, sameLink: true, includeLeading: true).count == 1)
+        history.append(sample(80, 12))
+        precondition(history.playbackInterval == nil)
+        history.append(sample(1, 6))
+        precondition(history.playbackInterval == nil && history.points(for: \.down, includeLeading: true).count == 1)
     }
 
     @MainActor

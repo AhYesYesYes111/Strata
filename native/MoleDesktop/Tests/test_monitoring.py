@@ -8,13 +8,14 @@ import tempfile
 tests = Path(__file__).resolve().parent
 sources = tests.parent / "Sources"
 cases = {
-    "WholeDiskTests": ["DiskScanner", "AnalyzePage", "Localization", "Design", "PlanetMark"],
+    "WholeDiskTests": ["DiskScanner", "DiskSnapshots", "AnalyzePage", "TreemapLayout", "Localization", "Design", "ContourMark"],
+    "TreemapTests": ["DiskScanner", "DiskSnapshots", "AnalyzePage", "TreemapLayout", "Localization", "Design", "ContourMark"],
     "HardwareCounterTests": ["HardwareTelemetry"],
-    "ProcessMonitorTests": ["ProcessMonitor", "Localization", "Design", "PlanetMark"],
+    "ProcessMonitorTests": ["ProcessMonitor", "Localization", "Design", "ContourMark"],
     "StatusVitalsTests": ["StatusVitals", "Localization"],
-    "MenuActivityTests": ["MenuActivityFooter", "Design", "PlanetMark", "Localization"],
+    "MenuActivityTests": ["MenuActivityFooter", "Design", "ContourMark", "Localization"],
     "MonitorSessionTests": ["MonitorSession", "StatusPage", "ProcessMonitor", "HardwareTelemetry",
-                            "StatusVitals", "LinkQuality", "Design", "Localization", "PlanetMark"],
+                            "StatusVitals", "LinkQuality", "Design", "Localization", "ContourMark"],
 }
 
 if __name__ == "__main__":

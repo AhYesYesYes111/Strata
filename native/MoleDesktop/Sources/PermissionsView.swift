@@ -33,9 +33,9 @@ struct PermissionsView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 14) {
                 Image(systemName: "lock.shield")
-                    .font(.system(size: 27, weight: .medium)).foregroundStyle(StrataColor.mint)
+                    .font(.system(size: 27, weight: .medium)).foregroundStyle(StrataColor.accent)
                     .frame(width: 50, height: 50)
-                    .background(StrataColor.mint.opacity(0.09), in: RoundedRectangle(cornerRadius: 14))
+                    .background(StrataColor.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 14))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(tr("权限设置", "Permissions"))

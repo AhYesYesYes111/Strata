@@ -8,12 +8,15 @@ private final class InventoryLog: @unchecked Sendable {
 
 @main struct WholeDiskTests {
     @MainActor static func main() async throws {
-        let model = DiskModel()
+        let fm = FileManager.default
+        let cache = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let snapshots = DiskSnapshots(directory: cache)
+        defer { try? fm.removeItem(at: cache) }
+        let model = DiskModel(snapshots: snapshots)
         model.startIfNeeded()
         precondition(model.location?.path == "/" && model.wholeDisk)
         model.cancel() // Test the entry point without walking personal data.
 
-        let fm = FileManager.default
         let folder = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: folder) }
@@ -60,11 +63,50 @@ private final class InventoryLog: @unchecked Sendable {
         precondition(model.history == [folder.standardizedFileURL] && model.result?.entries.count ?? 0 >= 680)
         model.back()
         precondition(model.location == folder.standardizedFileURL && model.result?.totalBytes == expected)
-        try await testPrivacy(in: folder)
-        print("Passed startup root, fair sizing, hard links, navigation, privacy boundaries and explicit folder selection.")
+        try await testSnapshots(in: folder, cache: cache, initial: model.result!)
+        try await testPrivacy(in: folder, snapshots: snapshots)
+        try await testMusicBoundaries(in: folder, snapshots: snapshots)
+        print("Passed startup root, fair sizing, hard links, navigation, snapshot restoration, refresh, cancellation, recovery and privacy checks.")
     }
 
-    @MainActor static func testPrivacy(in folder: URL) async throws {
+    @MainActor static func testSnapshots(in folder: URL, cache: URL, initial: DiskScanResult) async throws {
+        let snapshots = DiskSnapshots(directory: cache)
+        let model = DiskModel(snapshots: snapshots)
+        let scope = DiskSnapshots.Scope(root: folder, wholeDisk: false, selection: nil)
+        let marker = folder.appendingPathComponent("after-scan")
+        try Data([42]).write(to: marker)
+        model.scan(folder)
+        try await finish(model)
+        precondition(initial.measuredAt != nil && model.result?.measuredAt == initial.measuredAt)
+        precondition(model.result?.children.count == 2 && !model.result!.entries.contains { $0.url == marker })
+
+        model.refresh()
+        model.cancel()
+        precondition(model.result?.measuredAt == initial.measuredAt)
+        let kept = await snapshots.read(scope)
+        precondition(kept?.measuredAt == initial.measuredAt)
+        model.refresh()
+        try await finish(model)
+        precondition(model.result!.entries.contains { $0.url == marker })
+        let updated = await snapshots.read(scope)
+        precondition(updated?.measuredAt == model.result?.measuredAt && updated!.measuredAt! > initial.measuredAt!)
+
+        try FileManager.default.removeItem(at: marker)
+        try Data([0xff]).write(to: cache.appendingPathComponent(scope.filename))
+        model.scan(folder)
+        try await finish(model)
+        precondition(model.result != nil && !model.result!.entries.contains { $0.url == marker })
+
+        var startup = DiskScanResult(root: DiskScanner.startupRoot, entries: [], isPartial: true)
+        startup.measuredAt = Date()
+        try await snapshots.save(startup, for: .init(root: startup.root, wholeDisk: true, selection: nil))
+        let relaunched = DiskModel(snapshots: DiskSnapshots(directory: cache))
+        relaunched.startIfNeeded()
+        try await finish(relaunched)
+        precondition(relaunched.result?.measuredAt == startup.measuredAt && relaunched.result?.isPartial == true)
+    }
+
+    @MainActor static func testPrivacy(in folder: URL, snapshots: DiskSnapshots) async throws {
         let fm = FileManager.default
         let home = folder.appendingPathComponent("test-home", isDirectory: true)
         let privacy = DiskScanPrivacy(home: home)
@@ -109,7 +151,7 @@ private final class InventoryLog: @unchecked Sendable {
         precondition(privacy.needsSelection(album, selectedFolder: downloads))
         let albumContents = try await DiskScanner.scan(album, selectedFolder: album, privacy: privacy)
         precondition(!albumContents.isPartial && albumContents.entries.map(\.name) == ["private-item"])
-        let model = DiskModel()
+        let model = DiskModel(snapshots: snapshots)
         model.scan(album)
         try await finish(model)
         precondition(model.needsFolderSelection && model.result == nil)
@@ -121,7 +163,7 @@ private final class InventoryLog: @unchecked Sendable {
         precondition(model.result?.entries.map(\.name) == ["private-item"])
         model.scan(album)
         try await finish(model)
-        precondition(model.needsFolderSelection, "A new automatic scan must not inherit the prior selection")
+        precondition(model.needsFolderSelection && model.result == nil, "A new automatic scan must not inherit the prior selection or its snapshot")
         for path in ["/var/root/Desktop", "/private/var/root/Documents", "/Users/another-user/Desktop", "/Users/sibling/../another-user/Desktop/Sub",
                      "/Users/Shared/Photos.photoslibrary", "/System/Volumes/Data/Users/someone/Library/Containers",
                      "/System/Volumes/Data/Users/someone/Documents/Projects"] {
@@ -137,6 +179,57 @@ private final class InventoryLog: @unchecked Sendable {
         } catch let err as NSError {
             precondition(err.domain == NSPOSIXErrorDomain && err.code == Int(ELOOP))
         }
+    }
+
+    @MainActor static func testMusicBoundaries(in folder: URL, snapshots: DiskSnapshots) async throws {
+        let fm = FileManager.default
+        let home = folder.appendingPathComponent("media-test-home", isDirectory: true)
+        let privacy = DiskScanPrivacy(home: home)
+        let excluded = ["Library/com.apple.iTunesCloud", "Library/iTunes", "Library/MediaLibrary", "Library/Application Support/Music",
+                        "Library/Application Support/com.apple.iTunesCloud", "Library/Caches/com.apple.Music",
+                        "Library/Caches/com.apple.AMPLibraryAgent", "Library/HTTPStorages/com.apple.itunescloudd",
+                        "Projects/Archived.MUSICLIBRARY", "Projects/Archived.tvlibrary"]
+        for path in excluded {
+            let directory = home.appendingPathComponent(path, isDirectory: true)
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data(repeating: 81, count: 131_072).write(to: directory.appendingPathComponent("media"))
+        }
+        let cacheRoot = home.appendingPathComponent("Library/Caches", isDirectory: true)
+        let ordinary = cacheRoot.appendingPathComponent("com.apple.MusicTools", isDirectory: true)
+        try fm.createDirectory(at: ordinary, withIntermediateDirectories: true)
+        try Data(repeating: 63, count: 4096).write(to: ordinary.appendingPathComponent("control"))
+        let scoped = try await DiskScanner.scan(home, wholeDisk: true, privacy: privacy)
+        precondition(scoped.isPartial && scoped.totalBytes >= 4096 && scoped.totalBytes < 131_072,
+                     "Automatic walks must not measure Music service or relocated media libraries")
+        for path in excluded {
+            let directory = home.appendingPathComponent(path, isDirectory: true)
+            let parent = directory.deletingLastPathComponent()
+            precondition(privacy.pickerStart(for: directory.appendingPathComponent("nested", isDirectory: true)).path == parent.path)
+            precondition(!privacy.needsSelection(directory, selectedFolder: directory))
+            let listing = try await DiskScanner.scan(parent, privacy: privacy)
+            precondition(listing.entries.contains { $0.url == directory && $0.requiresSelection && $0.isPartial && $0.bytes == 0 })
+            do {
+                _ = try await DiskScanner.scan(directory, selectedFolder: parent, privacy: privacy)
+                preconditionFailure("Drilling down is not consent to open a Music store")
+            } catch DiskScanAccessError.selectFolder {}
+        }
+        let control = try await DiskScanner.scan(ordinary, privacy: privacy)
+        precondition(!control.isPartial && control.entries.map(\.name) == ["control"])
+        precondition(privacy.pickerStart(for: ordinary) == ordinary)
+        let alias = URL(fileURLWithPath: "/System/Volumes/Data/Users/sample/Library/Caches/com.apple.Music")
+        precondition(privacy.needsSelection(alias, selectedFolder: nil, musicOnly: true))
+        let projects = home.appendingPathComponent("Projects", isDirectory: true)
+        let album = projects.appendingPathComponent("Archived.tvlibrary", isDirectory: true)
+        let oldEntry = DiskEntry(url: album, isDirectory: true, bytes: 4096, isPartial: false)
+        let oldSnapshot = DiskScanResult(root: projects, entries: [oldEntry], isPartial: false,
+                                         children: [album: []], measuredAt: Date())
+        try await snapshots.save(oldSnapshot, for: .init(root: projects, wholeDisk: false, selection: nil))
+        let model = DiskModel(snapshots: snapshots)
+        model.scan(projects)
+        try await finish(model)
+        precondition(model.result?.entries.first?.requiresSelection == false && model.needsMusicSelection(album))
+        model.enter(album)
+        precondition(model.location == projects && model.history.isEmpty && !model.running)
     }
 
     @MainActor static func finish(_ model: DiskModel) async throws {

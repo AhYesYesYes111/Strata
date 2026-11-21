@@ -161,7 +161,7 @@ struct MenuActivityFooter: View {
                     Image(systemName: "mic")
                     Text(inputSummary)
                 }.font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(activity.camera == true || activity.microphone == true ? StrataColor.mint : StrataColor.muted)
+                    .foregroundStyle(activity.camera == true || activity.microphone == true ? StrataColor.accent : StrataColor.muted)
                     .accessibilityLabel(inputDetails).help(inputDetails)
                 Spacer(minLength: 0)
                 indicator("cup.and.saucer", activity.awake == true ? tr("防休眠", "Sleep held") : tr("可休眠", "Can sleep"),
@@ -219,7 +219,7 @@ struct MenuActivityFooter: View {
             Image(systemName: symbol)
             Text(active == nil ? unknownName + " ?" : name)
         }.font(.system(size: 10, weight: .medium))
-            .foregroundStyle(active == true ? StrataColor.mint : StrataColor.muted)
+            .foregroundStyle(active == true ? StrataColor.accent : StrataColor.muted)
             .accessibilityElement(children: .combine)
             .help(active == nil ? unknownName + " · " + state(nil) : name)
     }
