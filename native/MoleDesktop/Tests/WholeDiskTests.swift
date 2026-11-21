@@ -60,6 +60,87 @@ private final class InventoryLog: @unchecked Sendable {
         precondition(model.history == [folder.standardizedFileURL] && model.result?.entries.count ?? 0 >= 680)
         model.back()
         precondition(model.location == folder.standardizedFileURL && model.result?.totalBytes == expected)
-        print("Passed startup root, mount exclusions, fair live sizing, hard-link accounting, folder override, cached drill and return.")
+        try await testPrivacy(in: folder)
+        print("Passed startup root, fair sizing, hard links, navigation, privacy boundaries and explicit folder selection.")
+    }
+
+    @MainActor static func testPrivacy(in folder: URL) async throws {
+        let fm = FileManager.default
+        let home = folder.appendingPathComponent("test-home", isDirectory: true)
+        let privacy = DiskScanPrivacy(home: home)
+        let bytes = Data(repeating: 0x54, count: 65_536)
+        let protected = ["Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music", ".Trash",
+                         "Library/Group Containers", "Library/Containers", "Library/CloudStorage",
+                         "Library/Mobile Documents", "Library/Application Support/AddressBook",
+                         "Projects/Relocated.PhotosLibrary"]
+        let ordinary = "Projects/Desktop"
+        for name in protected + [ordinary] {
+            let dir = home.appendingPathComponent(name, isDirectory: true)
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try bytes.write(to: dir.appendingPathComponent("payload"))
+        }
+        let scoped = try await DiskScanner.scan(home, privacy: privacy)
+        let homeBoundaries = scoped.entries.filter(\.requiresSelection)
+        precondition(scoped.isPartial && homeBoundaries.count == 7)
+        precondition(homeBoundaries.allSatisfy { $0.bytes == 0 && $0.isPartial })
+        let lib = scoped.entries.first { $0.name == "Library" }!
+        let projects = scoped.entries.first { $0.name == "Projects" }!
+        precondition(lib.isPartial && lib.bytes < Int64(bytes.count))
+        precondition(projects.isPartial && projects.bytes >= Int64(bytes.count) && projects.bytes < Int64(bytes.count * 2))
+        let startingAboveHome = try await DiskScanner.scan(folder, wholeDisk: true, privacy: privacy)
+        let account = startingAboveHome.entries.first { $0.name == home.lastPathComponent }!
+        precondition(account.isPartial && account.bytes >= projects.bytes && account.bytes < Int64(bytes.count * 2))
+        let downloads = home.appendingPathComponent("Downloads", isDirectory: true)
+        for selection in [nil, home] {
+            do {
+                _ = try await DiskScanner.scan(downloads, selectedFolder: selection, privacy: privacy)
+                preconditionFailure("Recursive or enclosing selection must not open a protected folder")
+            } catch DiskScanAccessError.selectFolder {}
+        }
+        let album = downloads.appendingPathComponent("Travel.photoslibrary", isDirectory: true)
+        try fm.createDirectory(at: album, withIntermediateDirectories: true)
+        try bytes.write(to: album.appendingPathComponent("private-item"))
+        let selected = try await DiskScanner.scan(downloads, selectedFolder: downloads, privacy: privacy)
+        precondition(selected.entries.contains { $0.name == "payload" && $0.bytes > 0 })
+        precondition(selected.entries.contains { $0.url == album && $0.requiresSelection && $0.bytes == 0 })
+        let nested = downloads.appendingPathComponent("Work", isDirectory: true)
+        try fm.createDirectory(at: nested, withIntermediateDirectories: true)
+        precondition(!privacy.needsSelection(nested, selectedFolder: downloads))
+        precondition(privacy.needsSelection(album, selectedFolder: downloads))
+        let albumContents = try await DiskScanner.scan(album, selectedFolder: album, privacy: privacy)
+        precondition(!albumContents.isPartial && albumContents.entries.map(\.name) == ["private-item"])
+        let model = DiskModel()
+        model.scan(album)
+        try await finish(model)
+        precondition(model.needsFolderSelection && model.result == nil)
+        model.scan(album, userSelected: true)
+        try await finish(model)
+        precondition(model.result?.entries.map(\.name) == ["private-item"])
+        model.refresh()
+        try await finish(model)
+        precondition(model.result?.entries.map(\.name) == ["private-item"])
+        model.scan(album)
+        try await finish(model)
+        precondition(model.needsFolderSelection, "A new automatic scan must not inherit the prior selection")
+        for path in ["/var/root/Desktop", "/private/var/root/Documents", "/Users/another-user/Desktop", "/Users/sibling/../another-user/Desktop/Sub",
+                     "/Users/Shared/Photos.photoslibrary", "/System/Volumes/Data/Users/someone/Library/Containers",
+                     "/System/Volumes/Data/Users/someone/Documents/Projects"] {
+            precondition(privacy.needsSelection(URL(fileURLWithPath: path, isDirectory: true), selectedFolder: nil))
+        }
+        precondition(!privacy.needsSelection(URL(fileURLWithPath: "/Users/Shared/Desktop", isDirectory: true), selectedFolder: nil))
+        // A previously accessible parent can be replaced by a link between drill-downs.
+        let alias = home.appendingPathComponent("replaced", isDirectory: true)
+        try fm.createSymbolicLink(at: alias, withDestinationURL: downloads)
+        do {
+            _ = try await DiskScanner.scan(alias.appendingPathComponent("Work", isDirectory: true), privacy: privacy)
+            preconditionFailure("An intermediate link must not lead a direct scan into Downloads")
+        } catch let err as NSError {
+            precondition(err.domain == NSPOSIXErrorDomain && err.code == Int(ELOOP))
+        }
+    }
+
+    @MainActor static func finish(_ model: DiskModel) async throws {
+        for _ in 0..<500 where model.running { try await Task.sleep(nanoseconds: 10_000_000) }
+        precondition(!model.running)
     }
 }

@@ -1,5 +1,9 @@
 import Darwin
 import Foundation
+import System
+
+// Foundation path standardization can consult the filesystem to resolve links.
+private func lexicalPath(_ url: URL) -> String { FilePath(url.path).lexicallyNormalized().string }
 
 struct DiskEntry: Identifiable, Sendable {
     let url: URL
@@ -7,6 +11,7 @@ struct DiskEntry: Identifiable, Sendable {
     var bytes: Int64
     var isPartial: Bool
     var tileColorIndex: Int? = nil
+    var requiresSelection = false
 
     var id: URL { url }
     var name: String { url.lastPathComponent }
@@ -22,9 +27,86 @@ struct DiskScanResult: Sendable {
     var totalBytes: Int64 { entries.reduce(0) { $0 + $1.bytes } }
 }
 
+/// Decide from the parent listing alone. Even a metadata query inside a privacy
+/// boundary can cause a macOS access dialog before POSIX returns an error.
+struct DiskScanPrivacy: Sendable {
+    enum Context { case ordinary, home, library, applicationSupport }
+    let currentHome: String
+
+    init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        currentHome = Self.logicalPath(lexicalPath(home)).lowercased()
+    }
+
+    // APFS exposes one home at both paths, including when chosen directly.
+    private static func logicalPath(_ path: String) -> String {
+        let data = "/System/Volumes/Data"
+        if path.caseInsensitiveCompare(data) == .orderedSame { return "/" }
+        return path.lowercased().hasPrefix(data.lowercased() + "/") ? String(path.dropFirst(data.count)) : path
+    }
+
+    func context(for path: String) -> Context {
+        let path = Self.logicalPath(path).lowercased()
+        if isHome(path) { return .home }
+        let library = "/library"
+        if path.hasSuffix(library), isHome(String(path.dropLast(library.count))) { return .library }
+        let support = "/library/application support"
+        if path.hasSuffix(support), isHome(String(path.dropLast(support.count))) { return .applicationSupport }
+        return .ordinary
+    }
+
+    private func isHome(_ path: String) -> Bool {
+        path == currentHome || path == "/private/var/root" || path == "/var/root" ||
+            (path.hasPrefix("/users/") && path != "/users/shared" && !path.dropFirst("/users/".count).contains("/"))
+    }
+
+    func isBoundary(_ name: String, in context: Context) -> Bool {
+        let name = name.lowercased()
+        // A Photos library can be renamed or moved outside Pictures.
+        if name.hasSuffix(".photoslibrary") || name.hasSuffix(".photolibrary") ||
+            name.hasSuffix(".aplibrary") || name.hasSuffix(".musiclibrary") { return true }
+        switch context {
+        case .home:
+            return ["desktop", "documents", "downloads", "pictures", "movies", "music", ".trash"].contains(name)
+        case .library:
+            return ["containers", "group containers", "daemon containers", "cloudstorage", "mobile documents",
+                    "mail", "messages", "safari", "calendars", "reminders", "homekit", "photos", "cookies",
+                    "suggestions", "personalizationportrait", "sharing", "biome", "identityservices"].contains(name)
+        case .applicationSupport:
+            return ["addressbook", "callhistorydb", "callhistorytransactions", "mobilesync",
+                    "com.apple.tcc", "knowledge", "fileprovider"].contains(name)
+        case .ordinary: return false
+        }
+    }
+
+    func needsSelection(_ url: URL, selectedFolder: URL?) -> Bool {
+        let path = Self.logicalPath(lexicalPath(url))
+        let selection = selectedFolder.map { Self.logicalPath(lexicalPath($0)) }
+        var parent = ""
+        for part in path.split(separator: "/") {
+            let name = String(part)
+            let child = parent + "/" + name
+            if isBoundary(name, in: context(for: parent)) {
+                // Selecting an enclosing directory does not authorize additional
+                // protected roots below it. Selecting a particular subtree does.
+                guard let selection, selection == child || selection.hasPrefix(child + "/"),
+                      path == selection || path.hasPrefix(selection + "/") else { return true }
+            }
+            parent = child
+        }
+        return false
+    }
+}
+
+enum DiskScanAccessError: Error { case selectFolder }
+
 enum DiskScanner {
     static let startupRoot = URL(fileURLWithPath: "/", isDirectory: true)
     static let startupData = URL(fileURLWithPath: "/System/Volumes/Data", isDirectory: true)
+
+    static func directoryURL(_ url: URL) -> URL {
+        guard url.isFileURL else { return url }
+        return URL(fileURLWithPath: lexicalPath(url), isDirectory: true)
+    }
 
     /// Follow startup firmlinks in the unified namespace once. Mount containers lead
     /// back to the Data tree, mounted disk images or unrelated storage.
@@ -37,11 +119,13 @@ enum DiskScanner {
         }
     }
 
-    static func scan(_ root: URL, wholeDisk: Bool = false,
+    static func scan(_ root: URL, wholeDisk: Bool = false, selectedFolder: URL? = nil,
+                     privacy: DiskScanPrivacy = DiskScanPrivacy(),
                      onInventory: @escaping @Sendable (DiskScanResult) -> Void = { _ in },
                      onDirectory: @escaping @Sendable (String) -> Void = { _ in }) async throws -> DiskScanResult {
         let worker = Task.detached(priority: .utility) {
-            try FolderWalk(root: root, wholeDisk: wholeDisk).scan(onInventory: onInventory, onDirectory: onDirectory)
+            guard !privacy.needsSelection(root, selectedFolder: selectedFolder) else { throw DiskScanAccessError.selectFolder }
+            return try FolderWalk(root: root, wholeDisk: wholeDisk, privacy: privacy).scan(onInventory: onInventory, onDirectory: onDirectory)
         }
         return try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
     }
@@ -57,11 +141,13 @@ private struct FileIdentity: Hashable {
 private final class DirectoryFrame {
     let stream: UnsafeMutablePointer<DIR>
     let fd: Int32
+    let url: URL
     let isSystem: Bool
+    let privacyContext: DiskScanPrivacy.Context
     let childCacheIndex: Int?
     let bytesBeforeChild: Int64
 
-    init?(fd: Int32, isSystem: Bool = false, expected: FileIdentity? = nil,
+    init?(fd: Int32, url: URL, privacy: DiskScanPrivacy, expected: FileIdentity? = nil,
           childCacheIndex: Int? = nil, bytesBeforeChild: Int64 = 0) {
         guard fd >= 0 else { return nil }
         var actual = stat()
@@ -73,7 +159,9 @@ private final class DirectoryFrame {
         }
         self.fd = fd
         self.stream = stream
-        self.isSystem = isSystem
+        self.url = url
+        self.isSystem = url.path == "/System"
+        self.privacyContext = privacy.context(for: url.path)
         self.childCacheIndex = childCacheIndex
         self.bytesBeforeChild = bytesBeforeChild
     }
@@ -97,6 +185,7 @@ private final class DirectoryWalk {
 private final class FolderWalk {
     private let root: URL
     private let wholeDisk: Bool
+    private let privacy: DiskScanPrivacy
     private let deadline: DispatchTime
     private var remaining: Int
     private var devices = Set<dev_t>()
@@ -109,8 +198,9 @@ private final class FolderWalk {
     private var sequence = 0
     private let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
 
-    init(root: URL, wholeDisk: Bool) {
-        self.root = root.standardizedFileURL
+    init(root: URL, wholeDisk: Bool, privacy: DiskScanPrivacy) {
+        self.privacy = privacy
+        self.root = DiskScanner.directoryURL(root)
         self.wholeDisk = wholeDisk
         self.deadline = .now() + .seconds(wholeDisk ? 180 : 15)
         self.remaining = wholeDisk ? 6_000_000 : 200_000
@@ -120,14 +210,23 @@ private final class FolderWalk {
         try Task.checkCancellation()
         guard root.isFileURL else { throw CocoaError(.fileReadUnsupportedScheme) }
         var rootInfo = stat()
-        let rootFD = open(root.path, flags)
+        // openat below never follows links. Protect intermediate components of
+        // the initial path as well (including a directory replaced since drill-down).
+        var path = root.path
+        for (alias, target) in [("/var", "/private/var"), ("/tmp", "/private/tmp"), ("/etc", "/private/etc")] {
+            if path == alias || path.hasPrefix(alias + "/") {
+                path = target + path.dropFirst(alias.count)
+                break
+            }
+        }
+        let rootFD = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
         guard rootFD >= 0 else { throw posixError() }
         guard fstat(rootFD, &rootInfo) == 0 else {
             let failure = posixError()
             close(rootFD)
             throw failure
         }
-        guard let rootFrame = DirectoryFrame(fd: rootFD, isSystem: root.path == "/System") else { throw posixError() }
+        guard let rootFrame = DirectoryFrame(fd: rootFD, url: root, privacy: privacy) else { throw posixError() }
         devices.insert(rootInfo.st_dev)
         if wholeDisk {
             for url in [DiskScanner.startupRoot, DiskScanner.startupData] {
@@ -156,7 +255,7 @@ private final class FolderWalk {
                 next += 1
                 let entry = entries[index]
                 if let frame = DirectoryFrame(fd: openat(rootFrame.fd, entry.name, flags),
-                                              isSystem: entry.url.path == "/System", expected: identities[index]) {
+                                              url: entry.url, privacy: privacy, expected: identities[index]) {
                     active.append(DirectoryWalk(index: index, frame: frame, bytes: entry.bytes))
                 }
             }
@@ -194,6 +293,11 @@ private final class FolderWalk {
             withName(item) { name in
                 guard let label = String(validatingUTF8: name) else { partial = true; return }
                 if wholeDisk && DiskScanner.skipsStartupEntry(parent: root.path, name: label) { return }
+                if privacy.isBoundary(label, in: directory.privacyContext) {
+                    entries.append(DiskEntry(url: root.appendingPathComponent(label, isDirectory: true),
+                                             isDirectory: true, bytes: 0, isPartial: true, requiresSelection: true))
+                    return
+                }
                 var info = stat()
                 let known = fstatat(directory.fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0
                 if wholeDisk && known && !devices.contains(info.st_dev) { return }
@@ -230,6 +334,12 @@ private final class FolderWalk {
             }
             withName(item) { name in
                 if wholeDisk && frame.isSystem && strcmp(name, "Volumes") == 0 { return }
+                // d_type comes from the parent directory, without opening the child.
+                let type = Int32(item.pointee.d_type)
+                if type == DT_DIR || type == DT_UNKNOWN || frame.privacyContext != .ordinary {
+                    guard let label = String(validatingUTF8: name) else { task.partial = true; return }
+                    if privacy.isBoundary(label, in: frame.privacyContext) { task.partial = true; return }
+                }
                 var info = stat()
                 guard fstatat(frame.fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { task.partial = true; return }
                 guard devices.contains(info.st_dev) else {
@@ -251,8 +361,10 @@ private final class FolderWalk {
                     }
                 }
                 guard folder else { return }
-                if task.frames.count < 64,
-                   let child = DirectoryFrame(fd: openat(frame.fd, name, flags), expected: FileIdentity(info),
+                if task.frames.count < 64, let label = String(validatingUTF8: name),
+                   let child = DirectoryFrame(fd: openat(frame.fd, name, flags),
+                                              url: frame.url.appendingPathComponent(label, isDirectory: true),
+                                              privacy: privacy, expected: FileIdentity(info),
                                               childCacheIndex: cacheIndex, bytesBeforeChild: before) {
                     task.frames.append(child)
                 } else { task.partial = true }

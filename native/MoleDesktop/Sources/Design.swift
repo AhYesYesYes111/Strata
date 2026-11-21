@@ -81,19 +81,10 @@ struct VolumeReading {
     }
 }
 
-// Nested elevation lines make a topographic relief. The same outline is used for the app mark.
-struct Relief: View {
-    var miniature = false
+struct NavigationPlanet: View {
     var body: some View {
         Canvas { context, size in
-            let count = miniature ? 6 : 45
-            for index in 0..<count {
-                let level = Double(index + 1) / Double(count)
-                let path = Path(reliefLine(in: size, level: level))
-                let color = Color(red: 0.63 + 0.26 * (1 - level), green: 0.85, blue: 0.61)
-                let opacity = miniature ? 1 : (index % 5 == 0 ? 0.91 : 0.60)
-                context.stroke(path, with: .color(color.opacity(opacity)), lineWidth: miniature ? 1.4 : (index % 5 == 0 ? 1.3 : 0.85))
-            }
+            context.withCGContext { PlanetMark.draw(in: $0, rect: CGRect(origin: .zero, size: size)) }
         }.accessibilityHidden(true)
     }
 }

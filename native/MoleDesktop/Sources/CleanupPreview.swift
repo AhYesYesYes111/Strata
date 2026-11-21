@@ -110,7 +110,7 @@ enum CleanupPreview {
             "HOME": home.path, "USER": NSUserName(), "LOGNAME": NSUserName(),
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
             "TMPDIR": FileManager.default.temporaryDirectory.path,
-            "TERM": "dumb", "LC_ALL": "C", "NO_COLOR": "1"
+            "TERM": "dumb", "LC_ALL": "C", "NO_COLOR": "1", "_MOLE_STRATA_GUI": "1"
         ]
         let action: ReportText
         let incomplete: ReportText

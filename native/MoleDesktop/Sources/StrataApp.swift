@@ -148,7 +148,7 @@ struct WorkspaceView: View {
 
     private var navigationBar: some View {
         HStack(spacing: 2) {
-            Relief(miniature: true)
+            NavigationPlanet()
                 .frame(width: 25, height: 25)
                 .padding(.leading, 7).padding(.trailing, 4)
                 .accessibilityHidden(true).help("Strata")

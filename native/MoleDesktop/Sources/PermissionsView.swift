@@ -49,7 +49,7 @@ struct PermissionsView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 Text(PrivacyPane.disk.title).font(.headline)
-                Text(tr("需要分析受保护的文件夹时，在系统设置中打开 Strata 的开关。如果列表里没有 Strata，点「＋」添加这个应用。", "To scan protected folders, enable Strata in System Settings. If Strata is missing from the list, click + and add this copy of the app."))
+                Text(tr("磁盘分析会跳过桌面、文稿和照片图库等位置。要测量某个位置，请在「磁盘分析」里选择该文件夹。如果 macOS 要求更高权限，可在此管理。", "Disk analysis skips locations such as Desktop, Documents and Photos libraries. To measure one, choose that folder in Analyze. If macOS requires more access, you can manage it here."))
                     .font(.callout).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
                     Image(systemName: "app.dashed").accessibilityHidden(true)

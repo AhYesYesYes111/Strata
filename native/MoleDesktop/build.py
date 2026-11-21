@@ -15,14 +15,17 @@ bundle_id = "local.strata.DiskWorkspace"
 
 usage_descriptions = {
     "NSDownloadsFolderUsageDescription": (
-        "Read file sizes in Downloads for disk analysis and cleanup previews.",
-        "读取下载目录中的文件大小，用于磁盘分析和清理预览。"),
+        "Measure the Downloads folder you choose in Disk Analysis.",
+        "测量你在磁盘分析中选择的下载文件夹。"),
     "NSDocumentsFolderUsageDescription": (
-        "Read file sizes in Documents for disk analysis and cleanup previews.",
-        "读取文稿目录中的文件大小，用于磁盘分析和清理预览。"),
+        "Measure the Documents folder you choose in Disk Analysis.",
+        "测量你在磁盘分析中选择的文稿文件夹。"),
     "NSDesktopFolderUsageDescription": (
-        "Read file sizes on the Desktop for disk analysis and cleanup previews.",
-        "读取桌面上的文件大小，用于磁盘分析和清理预览。"),
+        "Measure the Desktop folder you choose in Disk Analysis.",
+        "测量你在磁盘分析中选择的桌面文件夹。"),
+    "NSPhotoLibraryUsageDescription": (
+        "Measure the disk space used by the Photos library you choose in Disk Analysis.",
+        "测量你在磁盘分析中选择的照片图库所占的空间。"),
     "NSAppleEventsUsageDescription": (
         "During cleanup, Mole checks which apps are running to protect data that is in use.",
         "清理时，Mole 会核对正在运行的应用，保护仍在使用的数据。"),
@@ -55,9 +58,10 @@ def build():
         run(*swift, "-O", *sorted((project / "Sources").glob("*.swift")), "-o", macos / "Strata")
         iconset = stage / "Strata.iconset"
         iconset.mkdir()
-        run(*swift, project / "Sources/ReliefLines.swift", project / "Packaging/Icon.swift", "-o", stage / "make-icon")
+        run(*swift, project / "Sources/PlanetMark.swift", project / "Packaging/Icon.swift", "-o", stage / "make-icon")
         run(stage / "make-icon", iconset)
         run("iconutil", "-c", "icns", iconset, "-o", resources / "Strata.icns")
+        shutil.copyfile(project / "Resources/Earth.png", resources / "Earth.png")
         shutil.copy(repo / "mole", cli)
         shutil.copytree(repo / "lib", cli / "lib", copy_function=shutil.copy)
         for name in ("clean", "optimize"):
@@ -66,7 +70,7 @@ def build():
         plist = {
             "CFBundleName": "Strata", "CFBundleDisplayName": "Strata", "CFBundleIconFile": "Strata",
             "CFBundleIdentifier": bundle_id, "CFBundlePackageType": "APPL", "CFBundleExecutable": "Strata",
-            "CFBundleShortVersionString": "0.6.0", "CFBundleVersion": "6",
+            "CFBundleShortVersionString": "0.7.0", "CFBundleVersion": "7",
             "CFBundleDevelopmentRegion": "en", "CFBundleLocalizations": ["en", "zh-Hans"],
             "CFBundleInfoDictionaryVersion": "6.0",
             "LSMinimumSystemVersion": "13.0", "LSApplicationCategoryType": "public.app-category.utilities",

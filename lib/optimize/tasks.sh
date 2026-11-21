@@ -1242,6 +1242,7 @@ opt_launch_agents_cleanup() {
         return 0
     fi
 
+    local private_paths=0
     local broken_count=0
     local timed_out_count=0
 
@@ -1270,6 +1271,11 @@ opt_launch_agents_cleanup() {
             fi
         fi
 
+        if [[ "${_MOLE_STRATA_GUI:-}" == 1 && "$binary" == /* ]] && ! mole_strata_allows_probe "$binary" program; then
+            private_paths=$((private_paths + 1))
+            continue
+        fi
+
         # Only an absolute path that is genuinely missing counts as broken.
         # Bare names (node, python3) resolve via PATH at launch time, and a
         # path on an unmounted /Volumes/<disk> just means the drive is
@@ -1294,6 +1300,11 @@ opt_launch_agents_cleanup() {
     # A plist that could not be read in time is unknown: it is never called
     # healthy, and the task counts as failed in the summary line.
     if [[ $broken_count -eq 0 && $timed_out_count -eq 0 ]]; then
+        if [[ $private_paths -gt 0 ]]; then
+            opt_msg "Launch Agent review partial · private paths skipped"
+            optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_SKIPPED"
+            return 0
+        fi
         opt_msg "Launch Agents all healthy"
         optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_UNCHANGED"
         return 0

@@ -34,7 +34,7 @@ def main():
         compiler = ["xcrun", "swiftc", "-swift-version", "5", "-target", f"{platform.machine()}-apple-macosx13.0",
                     "-module-cache-path", root / "modules"]
         subprocess.run([
-            *compiler, source / "Localization.swift", source / "Design.swift", source / "ReliefLines.swift",
+            *compiler, source / "Localization.swift", source / "Design.swift", source / "PlanetMark.swift",
             source / "CleanupPreview.swift", source / "TimingEstimate.swift", source / "OrbitArtwork.swift", source / "PreviewPages.swift", source / "ReportSheet.swift", tests / "CleanupFlow.swift",
             "-o", executable,
         ], check=True)

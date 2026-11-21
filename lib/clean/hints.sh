@@ -224,6 +224,8 @@ probe_project_artifact_hints() {
     PROJECT_ARTIFACT_HINT_ESTIMATE_SAMPLES=0
     PROJECT_ARTIFACT_HINT_ESTIMATE_PARTIAL=false
     PROJECT_ARTIFACT_HINT_SCAN_SKIPPED=false
+    # This advisory walk follows configured links and measures complete project directories.
+    [[ "${_MOLE_STRATA_GUI:-}" != 1 ]] || return 0
 
     local max_projects=200
     local max_projects_per_root=0
@@ -523,6 +525,9 @@ show_user_launch_agent_hint_notice() {
         fi
         if [[ -n "$program" ]] && hint_is_system_binary "$program"; then
             continue
+        fi
+        if [[ "${_MOLE_STRATA_GUI:-}" == 1 && "$program" == /* ]]; then
+            mole_strata_allows_probe "$program" program || continue
         fi
         if [[ "$program" == /* && -f "$program" && -x "$program" ]]; then
             continue

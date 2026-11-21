@@ -231,10 +231,10 @@ private struct LocationCard: View {
                 Label(tr("按位置分析", "Explore by location"), systemImage: "chart.bar.xaxis")
                     .font(.system(size: 16, weight: .semibold))
                 Spacer(minLength: 6)
-                row(tr("用户缓存", "User caches"), url: home.appendingPathComponent("Library/Caches"), icon: "archivebox",
+                row(tr("用户缓存", "User caches"), url: home.appendingPathComponent("Library/Caches", isDirectory: true), icon: "archivebox",
                     color: StrataColor.muted)
                 Divider()
-                row(tr("下载", "Downloads"), url: home.appendingPathComponent("Downloads"), icon: "arrow.down.to.line",
+                row(tr("下载", "Downloads"), url: home.appendingPathComponent("Downloads", isDirectory: true), icon: "arrow.down.to.line",
                     color: StrataColor.muted)
                 Divider()
                 row(tr("应用程序", "Applications"), url: URL(fileURLWithPath: "/Applications"), icon: "square.grid.2x2",

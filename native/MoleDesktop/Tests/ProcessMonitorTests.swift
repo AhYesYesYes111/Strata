@@ -3,6 +3,17 @@ import Foundation
 @main
 struct ProcessMonitorTests {
     static func main() async throws {
+        // An app can run from Desktop or a photo library. Rendering its row must
+        // never ask the filesystem for that bundle's icon merely to show Status.
+        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: project.appendingPathComponent("Sources/ProcessMonitor.swift"), encoding: .utf8)
+        let rowStart = source.range(of: "struct ProcessMonitorRow: View")!
+        let row = source[rowStart.lowerBound...].split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        precondition(row.contains("NSRunningApplication(processIdentifier: reading.id.pid)?.icon"))
+        precondition(!row.contains("icon(forFile:") && !row.contains("proc_pidpath("))
+
         let before = ProcessCounters(cpu: 500, energy: 200, stamp: 1_000)
         let now = ProcessCounters(cpu: 700, energy: 520, stamp: 1_100)
         let rates = now.rates(since: before, nanosecondsPerTick: 40)

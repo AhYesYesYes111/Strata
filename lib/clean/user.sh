@@ -390,6 +390,7 @@ _incomplete_download_delete_guard_allows() {
 # view says the exact file is idle. The guarded cleanup repeats the probe after
 # sizing, and safe_remove repeats it again at the real deletion boundary.
 _clean_incomplete_downloads() {
+    [[ "${_MOLE_STRATA_GUI:-}" != 1 ]] || return 0
     [[ -d "$HOME/Downloads" ]] || return 0
 
     local -a extensions=("download" "crdownload" "part")
@@ -1070,8 +1071,8 @@ clean_brave_old_versions() {
 
 # Finder metadata (.DS_Store).
 clean_finder_metadata() {
-    if [[ "$PROTECT_FINDER_METADATA" == "true" ]]; then
-        return
+    if [[ "$PROTECT_FINDER_METADATA" == "true" || "${_MOLE_STRATA_GUI:-}" == 1 ]]; then
+        return 0
     fi
     clean_ds_store_tree "$HOME" "Home directory, .DS_Store"
 }
@@ -3187,6 +3188,8 @@ jetbrains_stale_version_dirs() {
 # List every agent worktree container once, NUL-separated: the fixed Codex and
 # T3 Code containers first, then each `.claude/worktrees` under the project roots.
 agent_worktree_containers() {
+    # A developer root can alias Documents and a whole worktree may contain a Photos library.
+    [[ "${_MOLE_STRATA_GUI:-}" != 1 ]] || return 0
     local -a roots=(
         "$HOME/code" "$HOME/Code" "$HOME/dev" "$HOME/Projects"
         "$HOME/GitHub" "$HOME/Workspace" "$HOME/Repos"

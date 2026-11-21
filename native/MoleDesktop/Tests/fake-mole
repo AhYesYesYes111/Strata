@@ -8,6 +8,7 @@ cd "$expected_home"
 IFS= read -r mode < mode
 ledger="$HOME/.config/mole/clean-list.txt"
 [ -z "${MOLE_TEST_MODE+x}${MOLE_TEST_TRASH_DIR+x}${MOLE_SKIP_MAIN+x}${BASH_ENV+x}" ] || exit 71
+[ "${_MOLE_STRATA_GUI:-}" = 1 ] || exit 77
 if IFS= read -r input; then exit 72; fi
 
 if [ "$#" = 2 ]; then

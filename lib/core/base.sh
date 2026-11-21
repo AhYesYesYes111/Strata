@@ -801,6 +801,36 @@ mole_ascii_lowercase() {
     printf -v "$1" '%s' "$_lowercase_value"
 }
 
+# The app runs its bundled CLI without interactive directory grants. Check
+# project roots and program references lexically before a stat/cd, then reject every symlink
+# component without looking up its destination. Finder alias files are not dirs.
+mole_strata_allows_probe() {
+    [[ "${_MOLE_STRATA_GUI:-}" == 1 ]] || return 0
+    local path="${1%/}" relative="" folded="" prefix="$HOME" part=""
+    case "$path" in
+        "$HOME/"*) relative="${path#"$HOME"/}" ;;
+        /Applications/* | /System/Applications/* | /System/Library/* | /usr/bin/* | /usr/sbin/* | /bin/* | /sbin/*)
+            [[ "${2:-}" == program ]] || return 1
+            prefix=""
+            relative="${path#/}"
+            ;;
+        *) return 1 ;;
+    esac
+    mole_ascii_lowercase folded "$relative"
+    case "/$folded/" in
+        */../* | */./* | *//* | /desktop/* | /documents/* | /downloads/* | /pictures/* | /movies/* | /music/* | /library/* | /.trash/* | \
+            *.photoslibrary/* | *.photolibrary/* | *.aplibrary/* | *.musiclibrary/*) return 1 ;;
+    esac
+    while [[ -n "$relative" ]]; do
+        part="${relative%%/*}"
+        prefix="$prefix/$part"
+        [[ ! -L "$prefix" ]] || return 1
+        [[ "$relative" == */* ]] || break
+        relative="${relative#*/}"
+    done
+    return 0
+}
+
 # Escape operation records and deletion-log fields at their write boundaries.
 # Control bytes must never create audit records or terminal controls, so each
 # one is written as \n, \r, \t or \xHH. Backslashes stay literal: a name with

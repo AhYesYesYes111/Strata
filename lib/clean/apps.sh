@@ -419,6 +419,9 @@ _mole_launch_agent_load_mount_points() {
 # absent, and its nearest existing ancestor is a folder this user can search.
 _mole_launch_agent_path_provably_missing() {
     local path="$1"
+    if [[ "${_MOLE_STRATA_GUI:-}" == 1 ]]; then
+        mole_strata_allows_probe "$path" program || return 1
+    fi
     [[ "$path" == /* ]] || return 1
     case "$path" in
         */./* | */../* | */. | */.. | *//*) return 1 ;;
@@ -528,6 +531,7 @@ scan_installed_apps() {
     # Cache installed app scans briefly. Only a current-schema file with the
     # completeness footer can authorize orphan decisions.
     local cache_file="$HOME/.cache/mole/installed_apps_cache"
+    [[ "${_MOLE_STRATA_GUI:-}" != 1 ]] || cache_file+=".strata"
     local cache_age_seconds=300 # 5 minutes
     if [[ -f "$cache_file" ]]; then
         local cache_mtime=""

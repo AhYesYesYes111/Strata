@@ -232,14 +232,24 @@ clean_service_worker_cache() {
     [[ "$guard_stopped" == "true" ]] && return 75
     return 0
 }
+# BSD find's physical walk still needs a prune before it opens an actual library package.
+_strata_media_prune=("(" -iname '*.photoslibrary' -o -iname '*.photolibrary' -o -iname '*.aplibrary' -o -iname '*.musiclibrary' ")" -prune -o)
+
 # Check whether a directory looks like a project container.
 project_cache_has_indicators() {
     local dir="$1"
     local max_depth="${2:-5}"
     local indicator_timeout="${MOLE_PROJECT_CACHE_DISCOVERY_TIMEOUT:-2}"
+    if [[ "${_MOLE_STRATA_GUI:-}" == 1 ]]; then
+        mole_strata_allows_probe "$dir" || return 1
+    fi
     [[ -d "$dir" ]] || return 1
 
-    local -a find_args=("$dir" "-maxdepth" "$max_depth" "(")
+    local -a find_args=("$dir" "-maxdepth" "$max_depth")
+    if [[ "${_MOLE_STRATA_GUI:-}" == 1 ]]; then
+        find_args+=("${_strata_media_prune[@]}")
+    fi
+    find_args+=("(")
     local first=true
     local indicator
     for indicator in "${MOLE_PURGE_PROJECT_INDICATORS[@]}"; do
@@ -262,13 +272,17 @@ discover_project_cache_roots() {
     local -a seen_identities=()
     local root
 
+    local config_mode=resolved
+    [[ "${_MOLE_STRATA_GUI:-}" != 1 ]] || config_mode=literal
     for root in "${MOLE_PURGE_DEFAULT_SEARCH_PATHS[@]}"; do
+        mole_strata_allows_probe "$root" || continue
         [[ -d "$root" ]] && roots+=("$root")
     done
 
     while IFS= read -r root; do
+        mole_strata_allows_probe "$root" || continue
         [[ -d "$root" ]] && roots+=("$root")
-    done < <(mole_purge_read_paths_config "$HOME/.config/mole/purge_paths" 2> /dev/null)
+    done < <(mole_purge_read_paths_config "$HOME/.config/mole/purge_paths" "$config_mode" 2> /dev/null)
 
     local _indicator_tmp
     _indicator_tmp=$(create_temp_file)
@@ -283,9 +297,9 @@ discover_project_cache_roots() {
 
     local dir
     local base
-    for dir in "$HOME"/*/; do
+    for dir in "$HOME"/*; do
+        mole_strata_allows_probe "$dir" || continue
         [[ -d "$dir" ]] || continue
-        dir="${dir%/}"
         base="${dir##*/}"
 
         case "$base" in
@@ -418,6 +432,9 @@ scan_project_cache_root() {
     if [[ ! "$scan_timeout" =~ ^[0-9]+(\.[0-9]+)?$ || "$scan_timeout" =~ ^0+(\.0+)?$ ]]; then
         scan_timeout=6
     fi
+    if [[ "${_MOLE_STRATA_GUI:-}" == 1 ]]; then
+        mole_strata_allows_probe "$root" || return 0
+    fi
     [[ -d "$root" ]] || return 0
     : > "$output_file"
 
@@ -434,8 +451,11 @@ scan_project_cache_root() {
     mole_find_knows_dataless || dataless_rc=$?
     mole_rc_signal "$dataless_rc" && return "$dataless_rc"
     [[ $dataless_rc -ne 0 ]] || dataless_test=(-flags +dataless)
-    local -a find_args=(
-        "$FIND_BSD" -P "$root" -maxdepth 9 -mount
+    local -a find_args=("$FIND_BSD" -P "$root" -maxdepth 9 -mount)
+    if [[ "${_MOLE_STRATA_GUI:-}" == 1 ]]; then
+        find_args+=("${_strata_media_prune[@]}")
+    fi
+    find_args+=(
         "(" -name "Library" -o -name ".Trash" -o -name "node_modules" -o -name ".tmp" -o -name ".git" -o -name ".svn" -o -name ".hg" -o -name ".venv" -o -name "venv" -o -name ".pnpm-store" -o -name ".fvm" -o -name "DerivedData" -o -name "Pods" -o -name "miniconda3" -o -name "anaconda3" -o -name "miniforge3" -o -name "mambaforge" -o -name "site-packages" -o -name "target" -o -name ".build" -o -name ".build-*" -o -name ".gradle" -o -name "Index.noindex" -o -name "_cacache" -o "${dataless_test[@]}" ")"
         -prune -o
         -type d

@@ -75,12 +75,7 @@ final class StrataMenuBar: NSObject, NSPopoverDelegate {
         let size = NSSize(width: 20, height: 20)
         let icon = NSImage(size: size, flipped: true) { _ in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
-            context.setStrokeColor(NSColor.black.cgColor)
-            context.setLineWidth(1.4)
-            for level in [0.24, 0.56, 0.90] {
-                context.addPath(reliefLine(in: size, level: level))
-                context.strokePath()
-            }
+            PlanetMark.draw(in: context, rect: CGRect(origin: .zero, size: size), template: true)
             return true
         }
         icon.isTemplate = true

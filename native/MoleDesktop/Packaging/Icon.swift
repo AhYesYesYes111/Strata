@@ -18,18 +18,22 @@ struct Icon {
                 let base = CGPath(roundedRect: CGRect(x: 32, y: 32, width: 448, height: 448),
                                   cornerWidth: 102, cornerHeight: 102, transform: nil)
                 context.addPath(base)
-                context.setFillColor(CGColor(srgbRed: 0.068, green: 0.16, blue: 0.135, alpha: 1))
-                context.fillPath()
-                context.translateBy(x: 72, y: 434)
+                context.clip()
+                let background = CGGradient(colorsSpace: colorSpace, colors: [
+                    CGColor(srgbRed: 0.222, green: 0.222, blue: 0.222, alpha: 1),
+                    CGColor(srgbRed: 0.080, green: 0.080, blue: 0.080, alpha: 1)
+                ] as CFArray, locations: [0, 1])!
+                context.drawLinearGradient(background, start: CGPoint(x: 100, y: 476),
+                                           end: CGPoint(x: 343, y: 32), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                context.addPath(base)
+                context.setStrokeColor(CGColor(gray: 1, alpha: 0.16))
+                context.setLineWidth(4)
+                context.strokePath()
+                context.translateBy(x: 0, y: 512)
                 context.scaleBy(x: 1, y: -1)
-                let count = points < 64 ? 4 : 10
-                for index in 1...count {
-                    let level = CGFloat(index) / CGFloat(count)
-                    context.addPath(reliefLine(in: CGSize(width: 360, height: 360), level: level))
-                    context.setStrokeColor(CGColor(srgbRed: 0.84 - 0.24 * level, green: 0.90, blue: 0.66, alpha: 1))
-                    context.setLineWidth(points < 64 ? 14 : 6.5)
-                    context.strokePath()
-                }
+                context.beginTransparencyLayer(auxiliaryInfo: nil)
+                PlanetMark.draw(in: context, rect: CGRect(x: 57, y: 57, width: 398, height: 398))
+                context.endTransparencyLayer()
                 let file = "icon_\(points)x\(points)" + (scale == 2 ? "@2x" : "") + ".png"
                 let url = directory.appendingPathComponent(file)
                 guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil),

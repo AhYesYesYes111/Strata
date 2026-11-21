@@ -284,17 +284,7 @@ private struct ProcessMonitorRow: View {
         .font(.callout).monospacedDigit().lineLimit(1)
         .padding(.horizontal, 16).frame(height: 29)
         .onAppear {
-            // Helpers often lack their own workspace icon. Use the enclosing app’s icon.
-            var path = [CChar](repeating: 0, count: 4096)
-            let capacity = UInt32(path.count)
-            if proc_pidpath(reading.id.pid, &path, capacity) > 0 {
-                let executable = String(cString: path)
-                if let bundle = executable.range(of: ".app/Contents/", options: .caseInsensitive) {
-                    let appPath = String(executable[..<bundle.lowerBound]) + String(executable[bundle].prefix(4))
-                    icon = NSWorkspace.shared.icon(forFile: appPath)
-                    return
-                }
-            }
+            // Consult the registered process. Its executable may live inside a private folder.
             icon = NSRunningApplication(processIdentifier: reading.id.pid)?.icon
         }
     }

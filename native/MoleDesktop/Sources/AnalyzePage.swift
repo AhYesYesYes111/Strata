@@ -11,10 +11,13 @@ final class DiskModel: ObservableObject {
 
     private enum ScanFailure {
         case cancelled
+        case selectFolder
         case read(NSError)
 
         var description: String {
             switch self {
+            case .selectFolder:
+                return tr("请通过「选择文件夹」分析此位置。", "Use Choose Folder to measure this location.")
             case .cancelled:
                 return tr("扫描已停止。", "Scan stopped.")
             case .read(let error):
@@ -42,8 +45,15 @@ final class DiskModel: ObservableObject {
     @Published private(set) var startupVolume: VolumeReading?
     private(set) var wholeDisk = false
 
-    func scan(_ url: URL) {
-        wholeDisk = url.standardizedFileURL.path == DiskScanner.startupRoot.path
+    private var selectedFolder: URL?
+    var needsFolderSelection: Bool {
+        if case .selectFolder = failure { return true }
+        return false
+    }
+
+    func scan(_ url: URL, userSelected: Bool = false) {
+        selectedFolder = userSelected ? url : nil
+        wholeDisk = DiskScanner.directoryURL(url).path == DiskScanner.startupRoot.path
         startupVolume = wholeDisk ? VolumeReading.read() : nil
         ancestors.removeAll()
         history = []
@@ -56,7 +66,7 @@ final class DiskModel: ObservableObject {
 
     func enter(_ url: URL) {
         guard let observed = result ?? inventory,
-              observed.entries.contains(where: { $0.isDirectory && $0.url == url }) else { return }
+              observed.entries.contains(where: { $0.isDirectory && !$0.requiresSelection && $0.url == url }) else { return }
         if let result {
             ancestors.append(result)
             if ancestors.count > 6 { ancestors.removeFirst() }
@@ -113,16 +123,17 @@ final class DiskModel: ObservableObject {
         work?.cancel()
         let ticket = UUID()
         request = ticket
-        location = url.standardizedFileURL
+        location = DiskScanner.directoryURL(url)
         result = nil
         inventory = nil
         failure = nil
         scanningName = nil
         running = true
         let scanStartup = wholeDisk
+        let selection = selectedFolder
         work = Task { [self] in
             do {
-                let report = try await DiskScanner.scan(url, wholeDisk: scanStartup, onInventory: { snapshot in
+                let report = try await DiskScanner.scan(url, wholeDisk: scanStartup, selectedFolder: selection, onInventory: { snapshot in
                     Task { @MainActor in
                         guard self.running, self.request == ticket, snapshot.sequence > (self.inventory?.sequence ?? 0) else { return }
                         self.inventory = snapshot
@@ -137,7 +148,7 @@ final class DiskModel: ObservableObject {
                 result = report
             } catch {
                 guard !Task.isCancelled else { return }
-                failure = .read(error as NSError)
+                failure = error is DiskScanAccessError ? .selectFolder : .read(error as NSError)
             }
             running = false
             inventory = nil
@@ -324,12 +335,12 @@ struct AnalyzePage: View {
                     ForEach(filtered) { entry in
                         Button { open(entry) } label: {
                             HStack(spacing: 9) {
-                                Image(systemName: entry.isDirectory ? "folder" : "doc")
+                                Image(systemName: entry.requiresSelection ? "lock" : (entry.isDirectory ? "folder" : "doc"))
                                     .frame(width: 18).foregroundStyle(warm)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(verbatim: entry.name).font(.system(size: 13, weight: .medium))
                                         .lineLimit(1).truncationMode(.middle)
-                                    Text(measuredSize(entry.bytes, partial: entry.isPartial))
+                                    Text(entry.requiresSelection ? tr("选择后测量", "Choose to measure") : measuredSize(entry.bytes, partial: entry.isPartial))
                                         .font(.caption).monospacedDigit().foregroundStyle(StrataColor.muted)
                                 }
                                 Spacer(minLength: 2)
@@ -376,7 +387,7 @@ struct AnalyzePage: View {
                 Button(tr("整个磁盘", "Whole Disk")) { model.scan(DiskScanner.startupRoot) }
                 Button(tr("个人文件夹", "Home")) { model.scan(FileManager.default.homeDirectoryForCurrentUser) }
                 Divider()
-                Button(tr("选择文件夹…", "Choose folder…"), action: chooseFolder)
+                Button(tr("选择文件夹…", "Choose folder…")) { chooseFolder() }
             } label: { Label(tr("位置", "Location"), systemImage: "folder") }
                 .menuStyle(.borderlessButton).fixedSize().help(tr("切换分析位置", "Choose a location"))
             Button {
@@ -416,7 +427,9 @@ struct AnalyzePage: View {
                     Image(systemName: "folder").font(.largeTitle).foregroundStyle(warm)
                     Text(model.message ?? (model.result?.entries.isEmpty == true && model.result?.isPartial == false
                          ? tr("文件夹为空", "This folder is empty") : tr("没有已测得的分配空间", "No allocated space was measured"))).font(.headline)
-                    if model.message != nil { Button(tr("重新扫描", "Scan again"), action: model.refresh) }
+                    if model.needsFolderSelection {
+                        Button(tr("选择文件夹…", "Choose folder…")) { chooseFolder(startingAt: model.location) }
+                    } else if model.message != nil { Button(tr("重新扫描", "Scan again"), action: model.refresh) }
                 }
             }.padding().frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(StrataColor.panel, in: RoundedRectangle(cornerRadius: 13))
@@ -424,7 +437,9 @@ struct AnalyzePage: View {
     }
 
     private func open(_ entry: DiskEntry) {
-        if entry.isDirectory { model.enter(entry.url) } else { reveal(entry.url) }
+        if entry.requiresSelection { chooseFolder(startingAt: entry.url) }
+        else if entry.isDirectory { model.enter(entry.url) }
+        else { reveal(entry.url) }
     }
 
     private func setHover(_ inside: Bool, url: URL) {
@@ -437,22 +452,23 @@ struct AnalyzePage: View {
         return url.lastPathComponent.isEmpty ? "/" : url.lastPathComponent
     }
 
-    private func chooseFolder() {
+    private func chooseFolder(startingAt requested: URL? = nil) {
         let panel = NSOpenPanel()
         panel.title = tr("选择要分析的文件夹", "Choose a folder to analyze")
         panel.prompt = tr("分析", "Analyze")
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
+        panel.treatsFilePackagesAsDirectories = true
         panel.canCreateDirectories = false
         panel.allowsMultipleSelection = false
-        panel.directoryURL = model.location
+        panel.directoryURL = requested ?? model.location
         if let window = NSApp.keyWindow {
             panel.beginSheetModal(for: window) { response in
-                if response == .OK, let url = panel.url { model.scan(url) }
+                if response == .OK, let url = panel.url { model.scan(url, userSelected: true) }
             }
         } else {
             panel.begin { response in
-                if response == .OK, let url = panel.url { model.scan(url) }
+                if response == .OK, let url = panel.url { model.scan(url, userSelected: true) }
             }
         }
     }
