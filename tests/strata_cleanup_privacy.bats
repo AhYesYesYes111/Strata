@@ -90,3 +90,69 @@ RUN
     [ "$status" -eq 0 ]
     [[ "$output" == *"safe program probes retained"* ]] || return 1
 }
+
+@test "Strata clean preview and execution skip cached sudo before system work" {
+    run /bin/bash --noprofile --norc <<'RUN'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+export _MOLE_STRATA_GUI=1
+adopt_sudo_session() { echo adopted >> "$HOME/admin"; return 0; }
+for DRY_RUN in true false; do
+    SYSTEM_CLEAN=true
+    start_cleanup
+    [[ "$SYSTEM_CLEAN" == false ]] || exit 1
+done
+[[ ! -e "$HOME/admin" ]] || exit 1
+unset _MOLE_STRATA_GUI
+DRY_RUN=false
+start_cleanup
+[[ "$SYSTEM_CLEAN" == true && -s "$HOME/admin" ]] || exit 1
+echo "terminal adopted mock sudo"
+RUN
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"terminal adopted mock sudo"* ]] || return 1
+}
+
+@test "Strata preview binds its exported paths to the current candidate digest" {
+    run env _MOLE_STRATA_GUI=1 /bin/bash --noprofile --norc <<'RUN'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+DRY_RUN=true
+export MOLE_DRY_RUN=1
+# Use a single isolated section to exercise the real ledger and summary.
+EXTERNAL_VOLUME_TARGET="$HOME/fixture"
+mkdir -p "$EXTERNAL_VOLUME_TARGET"
+touch "$EXTERNAL_VOLUME_TARGET/sample"
+clean_external_volume_target() { append_dry_run_cleanup_target "$1/sample" 100 1 true; }
+start_cleanup
+perform_cleanup
+RUN
+    [ "$status" -eq 0 ]
+    local preview="$HOME/.config/mole/clean-list.txt"
+    grep -F "$HOME/fixture/sample  #" "$preview"
+    local digest
+    digest=$(sed -n 's/^# Candidate digest: //p' "$preview")
+    [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+    [[ "$output" == *"Candidate digest: $digest"* ]] || return 1
+}
+
+@test "Strata candidate digest ignores record order and retains path identities" {
+    run /bin/bash --noprofile --norc <<'RUN'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+CLEAN_PREVIEW_LEDGER_FILE="$HOME/ledger"
+record() { printf '%s\0%s\0%s\0%s\0%s\0%s\0' "$1" 4 1 true Section "$2"; }
+{ record inode:42 /first; record inode:43 /second; } > "$CLEAN_PREVIEW_LEDGER_FILE"
+original=$(strata_candidate_digest)
+[[ "$original" =~ ^[0-9a-f]{64}$ ]] || exit 1
+{ record inode:43 /second; record inode:42 /first; } > "$CLEAN_PREVIEW_LEDGER_FILE"
+[[ "$(strata_candidate_digest)" == "$original" ]] || exit 1
+{ record inode:43 /second; record inode:44 /first; } > "$CLEAN_PREVIEW_LEDGER_FILE"
+[[ "$(strata_candidate_digest)" != "$original" ]] || exit 1
+printf 'truncated' >> "$CLEAN_PREVIEW_LEDGER_FILE"
+if strata_candidate_digest; then exit 1; fi
+echo "candidate comparisons passed"
+RUN
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"candidate comparisons passed"* ]] || return 1
+}

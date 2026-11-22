@@ -54,6 +54,12 @@ private final class InventoryLog: @unchecked Sendable {
             }
         }
         precondition(result.totalBytes == expected && result.children.count == 2)
+        for branch in result.entries {
+            let local = try await DiskScanner.scan(branch.url)
+            let cached = result.children[branch.url]!
+            precondition(cached.map(\.url) == local.entries.map(\.url))
+            precondition(cached.map(\.bytes) == local.entries.map(\.bytes))
+        }
         model.scan(folder)
         model.startIfNeeded()
         precondition(model.location?.path == folder.path && !model.wholeDisk)
@@ -73,6 +79,12 @@ private final class InventoryLog: @unchecked Sendable {
         let snapshots = DiskSnapshots(directory: cache)
         let model = DiskModel(snapshots: snapshots)
         let scope = DiskSnapshots.Scope(root: folder, wholeDisk: false, selection: nil)
+        var legacy = initial
+        legacy.independentChildSizes = nil
+        try await snapshots.save(legacy, for: scope)
+        let restored = await snapshots.read(scope)
+        precondition(restored?.totalBytes == initial.totalBytes && restored?.children.isEmpty == true)
+        try await snapshots.save(initial, for: scope)
         let marker = folder.appendingPathComponent("after-scan")
         try Data([42]).write(to: marker)
         model.scan(folder)

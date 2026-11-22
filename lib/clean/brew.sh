@@ -309,57 +309,145 @@ restore_homebrew_active_links() {
     fi
 }
 
+# Ask the same Homebrew installation for its configured roots, including
+# relocated logs, temporary staging, and the Ruby installation it prunes.
+# Resolve existing ancestors so an absent or symlinked root is checked using
+# both spellings. An unsupported Homebrew or an incomplete answer keeps all.
+brew_cleanup_roots() {
+    HOMEBREW_DEVELOPER=1 HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 \
+        run_with_timeout "$MOLE_TIMEOUT_PKG_LIST_SEC" brew ruby -e '
+            require "keg"
+            roots = [HOMEBREW_PREFIX, HOMEBREW_CELLAR, HOMEBREW_REPOSITORY,
+                     HOMEBREW_CACHE, HOMEBREW_LOGS, HOMEBREW_LOCKS,
+                     HOMEBREW_TEMP_CELLAR, HOMEBREW_TEMP_CASKROOM,
+                     HOMEBREW_PREFIX/"Caskroom", HOMEBREW_LIBRARY/"Homebrew/vendor",
+                     *Keg.prefix_subdirectories]
+            roots.concat(%w[downloads Cask api-source api/cask api/formula
+                            gh-actions-artifact bootsnap].map { |d| HOMEBREW_CACHE/d })
+            roots.concat(HOMEBREW_PREFIX.glob("lib/python*/site-packages"))
+            paths = roots.flat_map do |root|
+              root = Pathname(root)
+              raise unless root.absolute? && root.cleanpath == root
+              ancestor = root.ascend.find { |p| p.exist? || p.symlink? }
+              [root, (ancestor.realpath/root.relative_path_from(ancestor)).cleanpath]
+            end.uniq
+            raise if paths.any? { |p| p.root? || p.to_s.match?(/[[:cntrl:]]/) }
+            puts paths
+            puts "complete"
+        ' 2> /dev/null
+}
+
+brew_cleanup_scope_allowed() {
+    local roots="" root rc=0 pattern parent_pattern
+    roots=$(brew_cleanup_roots) || rc=$?
+    mole_rc_signal "$rc" && return "$rc"
+    if [[ $rc -ne 0 || "$roots" != /*$'\n'complete ]]; then
+        debug_log "Homebrew cleanup: configured roots unavailable"
+        return 1
+    fi
+    while IFS= read -r root; do
+        [[ "$root" == /* && "$root" != / && "$root" != *[[:cntrl:]]* ]] || return 1
+        if is_path_whitelisted "$root"; then
+            return 2
+        fi
+        _brew_cleanup_roots+=("$root")
+        # A glob may start above the root, e.g. /opt/*/Cellar/tool.
+        for pattern in "${WHITELIST_PATTERNS[@]+"${WHITELIST_PATTERNS[@]}"}"; do
+            [[ "$pattern" == *[\*\?\[]* ]] || continue
+            local double="//" single="/"
+            while [[ "$pattern" == *"$double"* ]]; do pattern=${pattern//"$double"/"$single"}; done
+            parent_pattern=${pattern%/*}
+            while [[ "$parent_pattern" == /* ]]; do
+                # shellcheck disable=SC2053 # whitelist entries intentionally support globs
+                [[ "$root" == $parent_pattern ]] && return 2
+                parent_pattern=${parent_pattern%/*}
+            done
+        done
+    done <<< "${roots%$'\n'complete}"
+    return 0
+}
+
+# Homebrew walks some directories through symlinks. Constrain even a link
+# created after the probe to the write roots that passed the whitelist.
+# Paths are sandbox parameters, never interpolated into the policy source.
+run_scoped_brew_cleanup() {
+    local timeout="$1" profile="(version 1)(allow default)(deny file-write*)"
+    local -a params=()
+    local root key
+    for root in "${_brew_cleanup_roots[@]}"; do
+        key="BREW_ROOT_${#params[@]}"
+        params+=("-D" "$key=$root")
+        profile+="(allow file-write* (subpath (param \"$key\")))"
+    done
+    local scratch
+    scratch=$(create_temp_dir) || return 1
+    scratch=$(cd -P "$scratch" && pwd -P) || return 1
+    params+=("-D" "BREW_TMP=$scratch")
+    profile+='(allow file-write* (literal "/dev/null") (subpath (param "BREW_TMP")))'
+    TMPDIR="$scratch" run_with_timeout "$timeout" /usr/bin/sandbox-exec "${params[@]}" -p "$profile" brew cleanup --prune=30
+}
+
 clean_homebrew() {
     command -v brew > /dev/null 2>&1 || return 0
     local cleanup_timeout="${MOLE_TIMEOUT_PKG_CLEANUP_SEC:-20}"
     local autoremove_preview_timeout="${MOLE_TIMEOUT_PKG_LIST_SEC:-10}"
     local brew_cache_file="${HOME}/.cache/mole/brew_last_cleanup"
-    if [[ "${DRY_RUN:-false}" == "true" ]]; then
-        # Check if Homebrew cache is whitelisted
-        if is_path_whitelisted "$HOME/Library/Caches/Homebrew"; then
+    brew_cleanup_ran_recently "$brew_cache_file" && return 0
+    if [[ "${DRY_RUN:-false}" != true ]]; then
+        snapshot_homebrew_active_links || true
+    fi
+    local -a _brew_cleanup_roots=()
+    local scope_rc=0
+    brew_cleanup_scope_allowed || scope_rc=$?
+    if mole_rc_signal "$scope_rc"; then
+        _mole_record_clean_cancellation "$scope_rc" "Homebrew cleanup"
+        return "$scope_rc"
+    fi
+    if [[ $scope_rc -ne 0 ]]; then
+        if [[ $scope_rc -eq 2 ]]; then
             echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Homebrew · skipped (whitelist)"
             note_activity
-        else
-            if ! brew_cleanup_ran_recently "$brew_cache_file"; then
-                local dry_run_cleanup_file
-                dry_run_cleanup_file=$(create_temp_file)
-                local dry_run_cleanup_exit=0
-                if [[ -t 1 ]]; then MOLE_SPINNER_PREFIX="  " start_inline_spinner "Homebrew cleanup..."; fi
-                run_brew_cleanup_preview "$cleanup_timeout" "$dry_run_cleanup_file" || dry_run_cleanup_exit=$?
-                if [[ -t 1 ]]; then stop_inline_spinner; fi
-                if [[ $dry_run_cleanup_exit -eq 0 ]]; then
-                    show_brew_cleanup_preview "$dry_run_cleanup_file" && note_activity
-                elif mole_rc_timeout "$dry_run_cleanup_exit"; then
-                    echo -e "  ${GRAY}${ICON_WARNING}${NC} Homebrew cleanup preview timed out · run ${GRAY}brew cleanup --dry-run${NC} manually"
-                    note_activity
-                else
-                    echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Homebrew · would cleanup"
-                    note_activity
-                fi
-                # Autoremove sits after the window check in the real run too.
-                local dry_run_autoremove_file
-                dry_run_autoremove_file=$(create_temp_file)
-                local dry_run_autoremove_exit=0
-                if [[ -t 1 ]]; then MOLE_SPINNER_PREFIX="  " start_inline_spinner "Checking Homebrew dependencies..."; fi
-                run_brew_autoremove_preview "$autoremove_preview_timeout" "$dry_run_autoremove_file" || dry_run_autoremove_exit=$?
-                if [[ -t 1 ]]; then stop_inline_spinner; fi
-                if [[ $dry_run_autoremove_exit -eq 0 ]] && brew_autoremove_preview_has_items "$dry_run_autoremove_file"; then
-                    show_brew_autoremove_preview "$dry_run_autoremove_file"
-                elif mole_rc_timeout "$dry_run_autoremove_exit"; then
-                    echo -e "  ${GRAY}${ICON_WARNING}${NC} Autoremove preview timed out · run ${GRAY}brew autoremove --dry-run${NC} manually"
-                fi
-            fi
         fi
         return 0
     fi
-    # Keep behavior consistent with dry-run preview.
-    if is_path_whitelisted "$HOME/Library/Caches/Homebrew"; then
-        echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Homebrew · skipped (whitelist)"
-        note_activity
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        local dry_run_cleanup_file
+        dry_run_cleanup_file=$(create_temp_file)
+        local dry_run_cleanup_exit=0
+        if [[ -t 1 ]]; then MOLE_SPINNER_PREFIX="  " start_inline_spinner "Homebrew cleanup..."; fi
+        run_brew_cleanup_preview "$cleanup_timeout" "$dry_run_cleanup_file" || dry_run_cleanup_exit=$?
+        if [[ -t 1 ]]; then stop_inline_spinner; fi
+        if mole_rc_signal "$dry_run_cleanup_exit"; then
+            _mole_record_clean_cancellation "$dry_run_cleanup_exit" "Homebrew cleanup"
+            return "$dry_run_cleanup_exit"
+        fi
+        if [[ $dry_run_cleanup_exit -eq 0 ]]; then
+            show_brew_cleanup_preview "$dry_run_cleanup_file" && note_activity
+        elif mole_rc_timeout "$dry_run_cleanup_exit"; then
+            echo -e "  ${GRAY}${ICON_WARNING}${NC} Homebrew cleanup preview timed out · run ${GRAY}brew cleanup --dry-run${NC} manually"
+            note_activity
+        else
+            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Homebrew · would cleanup"
+            note_activity
+        fi
+        # Autoremove sits after the window check in the real run too.
+        local dry_run_autoremove_file
+        dry_run_autoremove_file=$(create_temp_file)
+        local dry_run_autoremove_exit=0
+        if [[ -t 1 ]]; then MOLE_SPINNER_PREFIX="  " start_inline_spinner "Checking Homebrew dependencies..."; fi
+        run_brew_autoremove_preview "$autoremove_preview_timeout" "$dry_run_autoremove_file" || dry_run_autoremove_exit=$?
+        if [[ -t 1 ]]; then stop_inline_spinner; fi
+        if mole_rc_signal "$dry_run_autoremove_exit"; then
+            _mole_record_clean_cancellation "$dry_run_autoremove_exit" "Homebrew cleanup"
+            return "$dry_run_autoremove_exit"
+        fi
+        if [[ $dry_run_autoremove_exit -eq 0 ]] && brew_autoremove_preview_has_items "$dry_run_autoremove_file"; then
+            show_brew_autoremove_preview "$dry_run_autoremove_file"
+        elif mole_rc_timeout "$dry_run_autoremove_exit"; then
+            echo -e "  ${GRAY}${ICON_WARNING}${NC} Autoremove preview timed out · run ${GRAY}brew autoremove --dry-run${NC} manually"
+        fi
         return 0
     fi
-    # Skip if cleaned recently to avoid repeated heavy operations.
-    brew_cleanup_ran_recently "$brew_cache_file" && return 0
     # No size gate on ~/Library/Caches/Homebrew: most of what `brew cleanup`
     # frees is old formula versions in the Cellar, which that cache does not
     # hold. A cache someone already emptied (Mole's Mac app clears downloads)
@@ -368,12 +456,11 @@ clean_homebrew() {
     local brew_tmp_file
     local brew_exit=0
     brew_tmp_file=$(create_temp_file)
-    snapshot_homebrew_active_links || true
     if [[ -t 1 ]]; then MOLE_SPINNER_PREFIX="  " start_inline_spinner "Homebrew cleanup..."; fi
     # No color, as in the preview: HOMEBREW_COLOR colors even redirected
     # output, and the summary line is read back from this file.
     HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_AUTOREMOVE=1 HOMEBREW_NO_COLOR=1 NONINTERACTIVE=1 \
-        run_with_timeout "$cleanup_timeout" brew cleanup --prune=30 > "$brew_tmp_file" 2>&1 || brew_exit=$?
+        run_scoped_brew_cleanup "$cleanup_timeout" > "$brew_tmp_file" 2>&1 || brew_exit=$?
     if [[ -t 1 ]]; then stop_inline_spinner; fi
     restore_homebrew_active_links
     if mole_rc_signal "$brew_exit"; then
@@ -420,6 +507,10 @@ clean_homebrew() {
     if [[ -t 1 ]]; then MOLE_SPINNER_PREFIX="  " start_inline_spinner "Checking Homebrew dependencies..."; fi
     run_brew_autoremove_preview "$autoremove_preview_timeout" "$autoremove_preview_file" || autoremove_preview_exit=$?
     if [[ -t 1 ]]; then stop_inline_spinner; fi
+    if mole_rc_signal "$autoremove_preview_exit"; then
+        _mole_record_clean_cancellation "$autoremove_preview_exit" "Homebrew cleanup"
+        return "$autoremove_preview_exit"
+    fi
     if mole_rc_timeout "$autoremove_preview_exit"; then
         echo -e "  ${GRAY}${ICON_WARNING}${NC} Autoremove preview timed out · run ${GRAY}brew autoremove --dry-run${NC} manually"
         # Keep the manual-action guidance visible past the idle-section erase.

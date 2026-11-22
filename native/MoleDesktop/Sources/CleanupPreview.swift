@@ -50,6 +50,11 @@ struct ReportText: LocalizedError {
     }
 }
 
+struct CleanupPlan: Equatable {
+    let ledgerDigest: String
+    let operationRows: [String]
+}
+
 struct CleanupReport {
     let summaryText: ReportText
     var summary: String { summaryText.value }
@@ -57,8 +62,10 @@ struct CleanupReport {
     let transcript: String
     let notice: ReportText?
     var detailNotice: String? { notice?.value }
-    var canApplyClean = false
+    var plan: CleanupPlan?
+    var canApplyClean: Bool { plan != nil && !logClipped }
     var logClipped = false
+    var completedClean = false
 }
 
 enum CleanupPreview {
@@ -71,10 +78,16 @@ enum CleanupPreview {
     private actor Runner {
         var busy = false
 
-        func perform(_ request: Request, onProgress: @escaping @Sendable (String) -> Void) async throws -> CleanupReport {
+        func perform(_ request: Request, approved: CleanupPlan? = nil, onProgress: @escaping @Sendable (String) -> Void) async throws -> CleanupReport {
             guard !busy else { throw ReportText("另一个 Mole 任务正在运行。请等该任务结束。", "Another Mole task is running. Wait for it to finish.") }
             busy = true
             defer { busy = false }
+            if case .confirmedClean = request {
+                let fresh = try await execute(.preview(.clean), onProgress: onProgress)
+                guard fresh.canApplyClean, let approved, fresh.plan == approved else {
+                    return fresh
+                }
+            }
             return try await execute(request, onProgress: onProgress)
         }
     }
@@ -88,8 +101,8 @@ enum CleanupPreview {
 
     /// The caller consumes a successful preview and obtains explicit consent
     /// for a fresh full clean. Never turn report text into deletion inputs.
-    static func applyConfirmedClean(onProgress: @escaping @Sendable (String) -> Void = { _ in }) async throws -> CleanupReport {
-        try await runner.perform(.confirmedClean, onProgress: onProgress)
+    static func applyConfirmedClean(_ plan: CleanupPlan, onProgress: @escaping @Sendable (String) -> Void = { _ in }) async throws -> CleanupReport {
+        try await runner.perform(.confirmedClean, approved: plan, onProgress: onProgress)
     }
 
     private static func execute(_ request: Request,
@@ -118,7 +131,7 @@ enum CleanupPreview {
         case .preview(let kind):
             process.arguments = [kind.rawValue, "--dry-run"]
             environment["MOLE_DRY_RUN"] = "1"
-            environment["MOLE_TEST_NO_AUTH"] = "1"
+            if kind == .optimize { environment["MOLE_TEST_NO_AUTH"] = "1" }
             action = ReportText("预览", "preview")
             incomplete = ReportText("", "")
         case .confirmedClean:
@@ -228,7 +241,7 @@ enum CleanupPreview {
                 let chinese = "已清理 " + amount + (count.map { " · " + String($0) + " 项" } ?? "")
                 return ReportText(chinese, String(line))
             } ?? ReportText("CLI 已完成清理", "Cleanup complete")
-            return CleanupReport(summaryText: summary, groups: [], transcript: transcript, notice: nil, logClipped: clipped)
+            return CleanupReport(summaryText: summary, groups: [], transcript: transcript, notice: nil, logClipped: clipped, completedClean: true)
         }
     }
 
@@ -291,6 +304,29 @@ enum CleanupPreview {
         return Array(lines[(start + 2)..<end])
     }
 
+    // Some owner commands (including Homebrew) describe their plans in the
+    // section output. Keep each indented detail bound to its action, and
+    // ignore traversal order, progress messages and host free-space readings.
+    private static func operationRows(_ lines: [Substring]) -> [String] {
+        var rows: [String] = []
+        var section = ""
+        var action: String?
+        for line in lines {
+            if line.hasPrefix("    "), let action {
+                rows.append(action + "\n" + line)
+            } else {
+                action = nil
+                if line.hasPrefix("➤ ") { section = String(line) }
+                if line.hasPrefix("  ○ ") {
+                    let row = section + "\n" + line
+                    rows.append(row)
+                    action = row
+                }
+            }
+        }
+        return rows.sorted()
+    }
+
     static func report(_ kind: PreviewKind, transcript: String, home: URL, started: Date) -> CleanupReport {
         let lines = transcript.split(separator: "\n")
         switch kind {
@@ -337,10 +373,17 @@ enum CleanupPreview {
             let recognizedSize = size.range(of: #"^[0-9]+(\.[0-9]+)?(B|KB|MB|GB|TB)\+?$"#,
                                             options: .regularExpression) != nil
             let positiveBytes = (Double(size.prefix(while: { $0.isNumber || $0 == "." })) ?? 0) > 0
+            let digest = final.first { $0.hasPrefix("Candidate digest: ") }
+                .map { String($0.dropFirst("Candidate digest: ".count)) }
+            let verifiedDigest = digest.flatMap { value in
+                value.range(of: #"^[a-f0-9]{64}$"#, options: .regularExpression) != nil &&
+                    footer.contains("# Candidate digest: \(value)") ? value : nil
+            }
             let verified = recognizedSize && positiveBytes && (items ?? 0) > 0 && !groups.isEmpty &&
                 final.contains(stats) && final.contains("Detailed file list: \(url.path)")
             return CleanupReport(summaryText: summary, groups: groups, transcript: transcript,
-                                 notice: groups.isEmpty ? missing : notice, canApplyClean: verified)
+                                 notice: groups.isEmpty || verifiedDigest == nil ? missing : notice,
+                                 plan: verified ? verifiedDigest.map { CleanupPlan(ledgerDigest: $0, operationRows: operationRows(lines)) } : nil)
         }
     }
 
@@ -357,7 +400,7 @@ enum CleanupPreview {
               Double(info.st_mtimespec.tv_sec + 1) >= started.timeIntervalSince1970,
               let bytes = try? handle.read(upToCount: limit + 1),
               bytes.count == info.st_size else { return nil }
-        return String(decoding: bytes, as: UTF8.self)
+        return String(data: bytes, encoding: .utf8)
     }
 
     private static func parseEntries(_ rows: [Substring]) -> ([PreviewGroup], Bool) {

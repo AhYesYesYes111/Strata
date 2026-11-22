@@ -26,9 +26,11 @@ actor DiskSnapshots {
         guard !Task.isCancelled, let file = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? file.close() }
         guard let data = try? file.read(upToCount: limit + 1), data.count <= limit,
-              let report = try? PropertyListDecoder().decode(DiskScanResult.self, from: data),
+              var report = try? PropertyListDecoder().decode(DiskScanResult.self, from: data),
               report.root == scope.root, report.measuredAt != nil, report.pendingDirectories == 0,
               valid(report.entries, under: report.root) else { return nil }
+        // Older parent totals are usable, but their child rows used global link attribution.
+        if report.independentChildSizes != true { report.children.removeAll() }
         let folders = Set(report.entries.filter { $0.isDirectory && !$0.requiresSelection }.map(\.url))
         guard report.children.allSatisfy({ folders.contains($0.key) && valid($0.value, under: $0.key) }) else { return nil }
         return report

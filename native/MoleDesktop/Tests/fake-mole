@@ -12,22 +12,35 @@ ledger="$HOME/.config/mole/clean-list.txt"
 if IFS= read -r input; then exit 72; fi
 
 if [ "$#" = 2 ]; then
-    [ "$2" = "--dry-run" ] && [ "$MOLE_DRY_RUN" = 1 ] && [ "$MOLE_TEST_NO_AUTH" = 1 ] || exit 73
+    [ "$2" = "--dry-run" ] && [ "$MOLE_DRY_RUN" = 1 ] || exit 73
     printf '%s preview\n' "$1" >> calls
     case "$1" in
         optimize)
+            [ "$MOLE_TEST_NO_AUTH" = 1 ] || exit 73
             printf '===\nDry Run Complete, No Changes Made\nWould apply 3 optimizations\n===\n'
             if [ "$mode" = partial ]; then exit 1; fi
             ;;
         clean)
+            [ -z "${MOLE_TEST_NO_AUTH+x}" ] || exit 73
             size=8MB
+            digest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+            if [ "$mode" = changed ] || [ "$mode" = owner ]; then digest=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; fi
             if [ "$mode" != missing ]; then
                 ledger_size=$size
                 if [ "$mode" = mismatch ]; then ledger_size=5KB; fi
-                printf '# Mole Cleanup Preview - fixture\n=== User caches ===\n%s  # 8MB\n# Potential cleanup: %s\n# Items: 1\n' \
-                    "$HOME/example.fixture" "$ledger_size" > "$ledger"
+                candidate="example.fixture"
+                if [ "$mode" = changed ] || [ "$mode" = owner ]; then candidate="updated.fixture"; fi
+                printf '# Mole Cleanup Preview - fixture\n=== User caches ===\n%s  # 8MB\n# Potential cleanup: %s\n# Items: 1\n# Candidate digest: %s\n' \
+                    "$HOME/$candidate" "$ledger_size" "$digest" > "$ledger"
             fi
-            printf '==========\nDry run complete - no changes made\nPotential space: %s · 1 items\nDetailed file list: %s\n==========\n' "$size" "$ledger"
+            printf '➤ Developer tools\n  ○ Homebrew cleanup · would free 9MB\n'
+            if [ "$mode" = owner ]; then
+                printf '    libfixture 3.0 · 9MB\n'
+            else
+                printf '    libfixture 2.0 · 9MB\n'
+            fi
+            if [ "$mode" = stale ]; then digest=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc; fi
+            printf '==========\nDry run complete - no changes made\nPotential space: %s · 1 items\nCandidate digest: %s\nDetailed file list: %s\n==========\n' "$size" "$digest" "$ledger"
             ;;
         *) exit 74 ;;
     esac

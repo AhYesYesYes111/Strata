@@ -436,6 +436,32 @@ emit_deduplicated_dry_run_ledger() {
     done
 }
 
+# GUI confirmation compares candidate records independent of worker/scan order.
+# Hash complete NUL-delimited records; a partial, oversized or unreadable ledger
+# leaves the preview available for inspection without authorizing a clean.
+strata_candidate_digest() {
+    # shellcheck disable=SC2016 # Perl fields and variables are intentionally literal.
+    run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" /usr/bin/perl -MDigest::SHA=sha256,sha256_hex -e '
+        use strict;
+        use warnings;
+        binmode STDIN;
+        local $/ = "\0";
+        my @rows;
+        die "oversized ledger" if -s STDIN > 16 * 1024 * 1024;
+        while (defined(my $record = <STDIN>)) {
+            for (1 .. 5) {
+                my $field = <STDIN>;
+                die "partial ledger" unless defined $field;
+                $record .= $field;
+            }
+            die "partial ledger" unless substr($record, -1) eq "\0";
+            push @rows, sha256($record);
+        }
+        die "empty ledger" unless @rows;
+        print sha256_hex(join "", sort @rows);
+    ' < "$CLEAN_PREVIEW_LEDGER_FILE"
+}
+
 write_clean_preview_header() {
     cat > "$EXPORT_LIST_FILE" << EOF
 # Mole Cleanup Preview - $(date '+%Y-%m-%d %H:%M:%S')
@@ -1618,6 +1644,13 @@ start_cleanup() {
     echo -e "${PURPLE_BOLD}Clean Your Mac${NC}"
     echo ""
 
+    # Strata previews and applies in the same user-only scope. A sudo ticket
+    # obtained by another terminal never authorizes a GUI cleanup.
+    if [[ "${_MOLE_STRATA_GUI:-}" == 1 ]]; then
+        SYSTEM_CLEAN=false
+        return 0
+    fi
+
     if [[ "$DRY_RUN" != "true" && -t 0 ]]; then
         echo -e "${GRAY}${ICON_WARNING} Use --dry-run to preview, --whitelist to manage protected paths${NC}"
     fi
@@ -2073,6 +2106,16 @@ perform_cleanup() {
                 echo "# Items: $files_cleaned"
                 echo "# Categories: $total_items"
             } >> "$EXPORT_LIST_FILE"
+
+            # Bind the GUI report to the private NUL-delimited records from
+            # this process, including device/inode and candidates past row 1000.
+            if [[ "${_MOLE_STRATA_GUI:-}" == 1 ]]; then
+                local candidate_digest=""
+                if candidate_digest=$(strata_candidate_digest); then
+                    printf '# Candidate digest: %s\n' "$candidate_digest" >> "$EXPORT_LIST_FILE"
+                    summary_details+=("Candidate digest: $candidate_digest")
+                fi
+            fi
 
         else
             if [[ ${MOLE_CLEAN_SIZING_TIMEOUTS:-0} -gt 0 ]]; then

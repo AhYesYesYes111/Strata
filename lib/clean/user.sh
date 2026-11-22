@@ -132,12 +132,19 @@ clean_trash() {
         MOLE_SPINNER_PREFIX="  " start_inline_spinner "Emptying trash..."
     fi
 
-    local cleaned_count=0
+    local cleaned_count=0 trash_removed_kb=0
+    # An empty result means no removal. Zero is a successful zero-byte item.
+    local _MOLE_REMOVED_SIZE_KB
     local skipped_count=0
     local processed_count=0
     while IFS= read -r -d '' item; do
+        [[ -e "$item" ]] || continue
+        _MOLE_REMOVED_SIZE_KB=""
         if safe_remove "$item" true; then
-            cleaned_count=$((cleaned_count + 1))
+            if [[ -n "$_MOLE_REMOVED_SIZE_KB" ]]; then
+                trash_removed_kb=$((trash_removed_kb + _MOLE_REMOVED_SIZE_KB))
+                cleaned_count=$((cleaned_count + 1))
+            fi
         else
             skipped_count=$((skipped_count + 1))
         fi
@@ -154,6 +161,7 @@ clean_trash() {
     [[ -t 1 ]] && stop_inline_spinner
 
     if [[ $cleaned_count -gt 0 ]]; then
+        mole_add_cleaned_row "$cleaned_count" "$trash_removed_kb"
         if [[ $skipped_count -gt 0 ]]; then
             echo -e "  ${YELLOW}${ICON_WARNING}${NC} Trash · removed $(mole_count_label "$cleaned_count" item), $skipped_count could not be removed"
         else

@@ -66,7 +66,7 @@ struct CleanupFlow {
         clean.applyAfterConfirmation()
         try require(!clean.running && (try history()).isEmpty, "Apply without a preview launched the CLI")
 
-        for invalid in ["missing", "mismatch"] {
+        for invalid in ["missing", "mismatch", "stale"] {
             try setMode(invalid)
             clean.start()
             try await wait { !clean.running }
@@ -106,8 +106,23 @@ struct CleanupFlow {
         try require(englishExport.contains("User caches (1 path)") && englishExport.contains("Run log") &&
                     englishExport.contains(raw), "English export lost labels or changed its transcript")
         UserDefaults.standard.set(AppLanguage.chinese.rawValue, forKey: AppLanguage.key)
-        let previewCalls = ["clean preview", "clean preview", "optimize preview", "clean preview"]
+        let previewCalls = ["clean preview", "clean preview", "clean preview", "optimize preview", "clean preview"]
         try require(try history() == previewCalls, "Preview initiated a mutation or ran the wrong CLI arguments")
+
+        try setMode("changed")
+        clean.applyAfterConfirmation()
+        try await wait { !clean.running }
+        try require(!clean.didClean && clean.report?.canApplyClean == true && clean.message != nil,
+                    "Changed candidate list failed to require fresh confirmation")
+        try require(clean.report?.groups.first?.entries.first?.path == home.appendingPathComponent("updated.fixture").path,
+                    "Reconfirmation kept the obsolete candidate list")
+        try require(try history() == previewCalls + ["clean preview"], "Changed candidates reached cleanup")
+
+        try setMode("owner")
+        clean.applyAfterConfirmation()
+        try await wait { !clean.running }
+        try require(!clean.didClean && clean.report?.canApplyClean == true, "Changed Homebrew details reused approval")
+        try require(clean.report?.transcript.contains("libfixture 3.0") == true, "Updated Homebrew detail missing")
 
         clean.applyAfterConfirmation()
         try await wait { !clean.running }
@@ -118,7 +133,7 @@ struct CleanupFlow {
         try require(completedClean != nil && completedClean != initialClean && clean.cleanEstimate.basis == "参考上次清理",
                     "Successful execution did not record its own duration")
         clean.applyAfterConfirmation()
-        try require(!clean.running && (try history()) == previewCalls + ["clean apply"], "Duplicate apply")
+        try require(!clean.running && (try history()) == previewCalls + ["clean preview", "clean preview", "clean preview", "clean apply"], "Duplicate apply")
 
         try setMode("slow")
         clean.start()
@@ -140,7 +155,7 @@ struct CleanupFlow {
         try require(UserDefaults.standard.data(forKey: timingKey) == completedClean,
                     "Cancelled execution replaced the last successful clean timing")
         try require(kill(pid, 0) == -1 && errno == ESRCH, "Cancelled child remains alive")
-        try require(try history() == previewCalls + ["clean apply", "clean preview", "clean apply"], "Unexpected command sequence")
+        try require(try history() == previewCalls + ["clean preview", "clean preview", "clean preview", "clean apply", "clean preview", "clean preview", "clean apply"], "Unexpected command sequence")
         print("Passed cleanup flow: gated confirmation, CLI arguments and environment, ledger checks, transcript, cancellation")
     }
 }

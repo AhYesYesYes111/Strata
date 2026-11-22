@@ -22,6 +22,7 @@ struct DiskScanResult: Sendable, Codable {
     let entries: [DiskEntry]
     let isPartial: Bool
     var children: [URL: [DiskEntry]] = [:]
+    var independentChildSizes: Bool? = true
     var pendingDirectories = 0
     var sequence = 0
     var measuredAt: Date?
@@ -203,6 +204,8 @@ private final class DirectoryWalk {
     var bytes: Int64
     var partial = false
     var immediate: [DiskEntry]? = []
+    var localBytes: Int64 = 0
+    var localLinks = Set<FileIdentity>()
 
     init(index: Int, frame: DirectoryFrame, bytes: Int64) {
         self.index = index
@@ -356,7 +359,7 @@ private final class FolderWalk {
             guard let item = readdir(frame.stream) else {
                 if errno != 0 { task.partial = true }
                 if let i = frame.childCacheIndex, task.immediate != nil {
-                    task.immediate?[i].bytes = task.bytes - frame.bytesBeforeChild
+                    task.immediate?[i].bytes = task.localBytes - frame.bytesBeforeChild
                 }
                 task.frames.removeLast()
                 continue
@@ -376,15 +379,25 @@ private final class FolderWalk {
                     return
                 }
                 let folder = isDirectory(info)
-                let before = task.bytes
+                let before = task.localBytes
                 task.bytes += allocated(info)
+                if task.immediate != nil {
+                    // Child snapshots measure this folder independently of its siblings.
+                    // Repeated links *within* the folder may be attributed differently by
+                    // its standalone scanner. Let drill-down run that scan in this case.
+                    if !folder && info.st_nlink > 1 && !task.localLinks.insert(FileIdentity(info)).inserted {
+                        task.immediate = nil
+                    } else {
+                        task.localBytes += info.st_blocks * 512
+                    }
+                }
                 var cacheIndex: Int?
                 if task.frames.count == 1, task.immediate != nil {
                     if cacheSlots > 0, let label = String(validatingUTF8: name) {
                         cacheSlots -= 1
                         cacheIndex = task.immediate?.count
                         let url = entries[task.index].url.appendingPathComponent(label, isDirectory: folder)
-                        task.immediate?.append(DiskEntry(url: url, isDirectory: folder, bytes: task.bytes - before, isPartial: false))
+                        task.immediate?.append(DiskEntry(url: url, isDirectory: folder, bytes: task.localBytes - before, isPartial: false))
                     } else {
                         task.immediate = nil
                     }

@@ -590,12 +590,7 @@ project_cache_build_git_index() {
             ".next")
                 # A linked cache folder puts its children in another tree that
                 # this repository cannot answer for; keep all of them.
-                if [[ -L "$cache_dir/cache" ]]; then
-                    for candidate in "$cache_dir/cache"/*; do
-                        printf 'U%s\n' "$candidate" >> "$index_file"
-                    done
-                    continue
-                fi
+                [[ ! -L "$cache_dir" && ! -L "$cache_dir/cache" ]] || continue
                 for candidate in "$cache_dir/cache"/*; do
                     [[ -e "$candidate" || -L "$candidate" ]] && candidates+=("$candidate")
                 done
@@ -910,7 +905,7 @@ _process_project_cache_matches_indexed() {
                 flush_python_group_if_needed "$current_python_root" current_python_dirs || return $?
                 current_python_root=""
                 current_python_dirs=()
-                if [[ -d "$cache_dir/cache" ]]; then
+                if [[ ! -L "$cache_dir" && ! -L "$cache_dir/cache" && -d "$cache_dir/cache" ]]; then
                     clean_project_cache_target "$cache_dir/cache"/* "Next.js build cache" || return $?
                 fi
                 ;;

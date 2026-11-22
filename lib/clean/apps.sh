@@ -691,8 +691,8 @@ scan_installed_apps() {
     (
         : > "$scan_tmp_dir/running.txt"
         local running_probe_succeeded=0
-        # Skip AppleScript during tests to avoid permission dialogs
-        if [[ "${MOLE_TEST_MODE:-0}" != "1" && "${MOLE_TEST_NO_AUTH:-0}" != "1" ]]; then
+        # Strata uses lsappinfo below without asking for System Events access.
+        if [[ "${_MOLE_STRATA_GUI:-}" != 1 && "${MOLE_TEST_MODE:-0}" != "1" && "${MOLE_TEST_NO_AUTH:-0}" != "1" ]]; then
             local running_apps=""
             # On a managed Mac the System Events automation permission is
             # often undetermined or denied, and this probe then burns its
@@ -709,7 +709,7 @@ scan_installed_apps() {
                 printf 'running-apps osascript failed after %ss\n' "$((SECONDS - osascript_started_at))" \
                     >> "$scan_tmp_dir/perf.list"
             fi
-        else
+        elif [[ "${_MOLE_STRATA_GUI:-}" != 1 ]]; then
             running_probe_succeeded=1
         fi
         # Fallback: lsappinfo is more reliable than osascript

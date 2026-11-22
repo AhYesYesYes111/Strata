@@ -118,7 +118,7 @@ struct ReportSheet: View {
                 Button(tr("取消", "Cancel"), role: .cancel) {}
                 Button(tr("执行整轮清理", "Run full cleanup"), role: .destructive) { confirmedClean?() }
             } message: {
-                Text((cleanTimingText.map { $0 + "\n\n" } ?? "") + tr("Mole 将重新扫描并按当前保护规则永久删除符合条件的项目，默认也会清空个人废纸篓。搜索仅筛选报告显示。实际范围可能与此预览不同。已有管理员授权时还可能处理系统缓存。已完成的删除无法撤销。", "Mole will scan again, permanently remove eligible items, and empty your Trash by default. Search filters only this report. The cleanup may differ from this preview and may include system caches if administrator access is already available. Deletions cannot be undone."))
+                Text((cleanTimingText.map { $0 + "\n\n" } ?? "") + tr("Mole 将重新扫描并按当前保护规则永久删除符合条件的项目，默认也会清空个人废纸篓。搜索仅筛选报告显示。预览与执行均使用普通用户权限。复查清单有变化时需要重新确认。执行期间文件仍可能发生变化。已完成的删除无法撤销。", "Mole will scan again, permanently remove eligible items, and empty your Trash by default. Search filters only this report. The preview and cleanup both use your user permissions. If the recheck finds a different list, you will be asked to review it again. Files can still change during cleanup. Deletions cannot be undone."))
             }
     }
 

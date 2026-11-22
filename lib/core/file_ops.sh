@@ -739,7 +739,7 @@ _mole_complete_lsof_mode() {
         return 0
     fi
 
-    if [[ "${MOLE_TEST_MODE:-0}" == "1" || "${MOLE_TEST_NO_AUTH:-0}" == "1" ]] ||
+    if [[ "${_MOLE_STRATA_GUI:-}" == 1 || "${MOLE_TEST_MODE:-0}" == "1" || "${MOLE_TEST_NO_AUTH:-0}" == "1" ]] ||
         ! command -v sudo > /dev/null 2>&1; then
         _MOLE_COMPLETE_LSOF_MODE="unknown"
         return 2
@@ -1621,7 +1621,7 @@ safe_remove() {
     # Accept pre-computed size to skip redundant I/O when the caller already measured.
     local size_kb=0
     local size_human=""
-    if oplog_enabled; then
+    if oplog_enabled || [[ "${_MOLE_REMOVED_SIZE_KB+x}" == x ]]; then
         if [[ -n "$precomputed_size_kb" ]]; then
             if [[ "$precomputed_size_kb" =~ ^[0-9]+$ ]]; then
                 size_kb="$precomputed_size_kb"
@@ -1844,6 +1844,11 @@ safe_remove() {
     fi
 
     if [[ $rm_exit -eq 0 ]]; then
+        # A caller can request the successful removal's size through this local.
+        # The missing-path and preview returns above leave its empty sentinel intact.
+        if [[ "${_MOLE_REMOVED_SIZE_KB+x}" == x ]]; then
+            _MOLE_REMOVED_SIZE_KB=$size_kb
+        fi
         # Log successful removal
         log_operation "${MOLE_CURRENT_COMMAND:-clean}" "REMOVED" "$path" "$size_human"
         return 0

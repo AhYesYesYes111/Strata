@@ -32,14 +32,14 @@ final class PreviewModel: ObservableObject {
     init(kind: PreviewKind) { self.kind = kind }
 
     func refreshVolume() { volume = VolumeReading.read() }
-    func start() { run(confirmed: false) }
+    func start() { run(approval: nil) }
 
     func applyAfterConfirmation() {
-        guard kind == .clean, report?.canApplyClean == true else { return }
-        run(confirmed: true)
+        guard kind == .clean, let report, report.canApplyClean else { return }
+        run(approval: report)
     }
 
-    private func run(confirmed: Bool) {
+    private func run(approval: CleanupReport?) {
         guard !running else { return }
         let ticket = UUID()
         generation = ticket
@@ -49,7 +49,7 @@ final class PreviewModel: ObservableObject {
         activeSection = ""
         finishedAt = nil
         running = true
-        applying = confirmed
+        applying = approval != nil
         didClean = false
         report = nil
         failure = nil
@@ -72,9 +72,15 @@ final class PreviewModel: ObservableObject {
                 volume = VolumeReading.read()
             }
             do {
-                if confirmed {
-                    report = try await CleanupPreview.applyConfirmedClean(onProgress: progress)
-                    didClean = true
+                if let plan = approval?.plan {
+                    let result = try await CleanupPreview.applyConfirmedClean(plan, onProgress: progress)
+                    report = result
+                    didClean = result.completedClean
+                    if !didClean {
+                        failure = ReportText("清单已更新。请查看最新扫描结果并重新确认。",
+                                             "The cleanup list changed. Review the latest scan before confirming again.")
+                        return
+                    }
                 } else {
                     let result = try await CleanupPreview.run(kind, onProgress: progress)
                     try Task.checkCancellation()
@@ -82,10 +88,10 @@ final class PreviewModel: ObservableObject {
                 }
                 if kind == .clean, !Task.isCancelled {
                     let sample = CleanRunTiming(seconds: elapsed, sections: sectionOffsets, completed: Date())
-                    timings.record(sample, for: confirmed ? .clean : .scan)
+                    timings.record(sample, for: didClean ? .clean : .scan)
                 }
             } catch {
-                failure = !confirmed && Task.isCancelled ? ReportText("扫描已取消。", "Scan canceled.") : ReportText(error)
+                failure = approval == nil && Task.isCancelled ? ReportText("扫描已取消。", "Scan canceled.") : ReportText(error)
             }
         }
     }
