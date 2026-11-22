@@ -582,49 +582,69 @@ Describe "install.ps1 -Uninstall" {
     }
 }
 
-Describe "User PATH removal preview" {
+Describe "User PATH edits" {
     BeforeAll {
-        $installScript = Join-Path $script:WindowsDir "install.ps1"
-        $ast = [System.Management.Automation.Language.Parser]::ParseFile($installScript, [ref]$null, [ref]$null)
-        $definition = $ast.Find({
-                param($node)
-                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq "Remove-FromUserPath"
-            }, $true)
-        $text = $definition.Extent.Text -replace '^function Remove-FromUserPath', 'function Remove-PathUnderTest'
-        . ([scriptblock]::Create($text))
-        Set-Item -Path "function:script:Remove-PathUnderTest" -Value (Get-Item "function:Remove-PathUnderTest").ScriptBlock
+        $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $script:WindowsDir "install.ps1"), [ref]$null, [ref]$null)
+        foreach ($name in 'Open-UserEnvironmentKey', 'Send-EnvironmentChange', 'Update-UserPath', 'Add-ToUserPath', 'Remove-FromUserPath') {
+            $definition = $ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}, $false)
+            if (-not $definition) { throw "Missing PATH function $name" }
+            . ([scriptblock]::Create($definition.Extent.Text))
+        }
     }
 
-    It "Names the entry it would remove and leaves the user PATH unchanged" {
-        # This reads the real user PATH; without the switch the function would rewrite it.
-        (Get-Command Remove-PathUnderTest).Parameters.ContainsKey("DryRun") | Should -BeTrue
+    BeforeEach {
+        $script:PathFixtureName = "Software\MoleCliPathTest-" + [guid]::NewGuid().ToString('N')
+        $script:PathFixture = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($script:PathFixtureName)
+        $script:RawOption = [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+        $script:SavedProcessPath = $env:PATH
+        Mock Open-UserEnvironmentKey {
+            [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($script:PathFixtureName, $Writable)
+        }
+        Mock Send-EnvironmentChange {}
         Mock Write-MoleDryRun {}
-        Mock Write-Success {}
+    }
+
+    AfterEach {
+        $env:PATH = $script:SavedProcessPath
+        $script:PathFixture.Dispose()
+        [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($script:PathFixtureName)
+    }
+
+    It "Preserves unrelated segments, variables and <Kind> on both add and remove" -ForEach @(
+        @{Kind = 'String'}, @{Kind = 'ExpandString'}
+    ) {
+        $original = '%USERPROFILE%\bin;;C:\Mixed Case;%TEMP%\tools;'
+        $script:PathFixture.SetValue("Path", $original, [Microsoft.Win32.RegistryValueKind]$Kind)
+        $dir = Join-Path $TestDrive "cli"
+        Add-ToUserPath $dir | Should -BeTrue
+        $script:PathFixture.GetValue("Path", $null, $script:RawOption) | Should -BeExactly "$original;$dir"
+        $script:PathFixture.GetValueKind("Path").ToString() | Should -BeExactly $Kind
+        Remove-FromUserPath $dir -DryRun | Should -BeTrue
+        $script:PathFixture.GetValue("Path", $null, $script:RawOption) | Should -BeExactly "$original;$dir"
+        Should -Invoke Write-MoleDryRun -Times 1 -Exactly -ParameterFilter { $Message -eq "Would remove from PATH: $dir" }
+        Remove-FromUserPath $dir | Should -BeTrue
+        $script:PathFixture.GetValue("Path", $null, $script:RawOption) | Should -BeExactly $original
+        $script:PathFixture.GetValueKind("Path").ToString() | Should -BeExactly $Kind
+        Should -Invoke Send-EnvironmentChange -Times 2 -Exactly
+    }
+
+    It "Keeps an unsupported PATH value and reports the registry type" {
+        $script:PathFixture.SetValue("Path", 42, [Microsoft.Win32.RegistryValueKind]::DWord)
         Mock Write-MoleError {}
-        $before = [Environment]::GetEnvironmentVariable("PATH", "User")
-        $absent = Join-Path $TestDrive "not-on-path"
-        $entry = "$before" -split ";" | Where-Object { $_ } | Select-Object -First 1
+        Add-ToUserPath (Join-Path $TestDrive "cli") | Should -BeFalse
+        $script:PathFixture.GetValue("Path") | Should -Be 42
+        $script:PathFixture.GetValueKind("Path").ToString() | Should -BeExactly 'DWord'
+        Should -Invoke Write-MoleError -Times 1 -Exactly -ParameterFilter { $Message -like '*DWord*' }
+        Should -Invoke Send-EnvironmentChange -Times 0 -Exactly
+    }
 
-        try {
-            Remove-PathUnderTest -Directory $absent -DryRun | Should -BeTrue
-            if ($entry) { Remove-PathUnderTest -Directory $entry -DryRun | Should -BeTrue }
-        }
-        finally {
-            # A broken gate must not cost the test machine a PATH entry: put the
-            # value back before the assertion below reports the change.
-            $after = [Environment]::GetEnvironmentVariable("PATH", "User")
-            $script:PathChangedByPreview = ($after -cne $before)
-            if ($script:PathChangedByPreview) { [Environment]::SetEnvironmentVariable("PATH", $before, "User") }
-        }
-        $script:PathChangedByPreview | Should -BeFalse -Because "a preview must not write the user PATH"
-
-        [Environment]::GetEnvironmentVariable("PATH", "User") | Should -BeExactly $before
-        Should -Invoke Write-Success -Times 0 -Exactly
-        Should -Invoke Write-MoleError -Times 0 -Exactly
-        Should -Invoke Write-MoleDryRun -Times 0 -Exactly -ParameterFilter { $Message -eq "Would remove from PATH: $absent" }
-        if ($entry) {
-            Should -Invoke Write-MoleDryRun -Times 1 -Exactly -ParameterFilter { $Message -eq "Would remove from PATH: $entry" }
-        }
+    It "Uses expanded names for comparison without rewriting an existing expandable PATH" {
+        $original = '%USERPROFILE%\mole;;%TEMP%\tools'
+        $script:PathFixture.SetValue("Path", $original, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        Add-ToUserPath (Join-Path $env:USERPROFILE "mole") | Should -BeTrue
+        Remove-FromUserPath (Join-Path $TestDrive "absent") | Should -BeTrue
+        $script:PathFixture.GetValue("Path", $null, $script:RawOption) | Should -BeExactly $original
+        Should -Invoke Send-EnvironmentChange -Times 0 -Exactly
     }
 }
 

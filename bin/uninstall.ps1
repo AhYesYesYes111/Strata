@@ -1506,9 +1506,15 @@ function Main {
         Set-DryRunMode -Enabled $true
     }
 
+    $interactive = Test-MoleInteractiveOutput
+    if (-not $interactive -and -not $script:MoleDryRunMode) {
+        Write-MoleError "Selection requires an interactive terminal. Run 'mo uninstall' in a terminal, or use 'mo uninstall --list' to preview."
+        exit 1
+    }
+
     # Without a console there is no list to pick from, so a preview shows what
     # --list shows. JSON output stays one array, without the summary.
-    if ($script:MoleDryRunMode -and -not (Test-MoleInteractiveOutput)) {
+    if (-not $interactive) {
         Show-UninstallList -ForceRescan:$Rescan
         if (-not (Test-UninstallListAsJson)) { Show-SummaryBlock -Heading 'Dry run complete - no changes made' }
         return

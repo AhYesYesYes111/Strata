@@ -124,6 +124,19 @@ func (m *model) cancelLiveScan() {
 	m.autoSortLiveEntries = false
 }
 
+// An empty or failed scan must never expose actions from a previous listing.
+func (m *model) clearDirectoryListing() {
+	m.entriesAll, m.entries = nil, nil
+	m.largeFilesAll, m.largeFiles = nil, nil
+	m.multiSelected, m.largeMultiSelected = nil, nil
+	m.selected, m.offset = 0, 0
+	m.largeSelected, m.largeOffset = 0, 0
+	m.totalFiles, m.totalSize, m.lastTotalFiles = 0, 0, 0
+	m.scanState = scanUnavailable
+	m.viewNeedsRefresh = true
+	m.deleteConfirm, m.deleteTarget = false, nil
+}
+
 func (m model) isCurrentLiveScan(id int64, path string) bool {
 	return id != 0 && id == m.liveScanID && path == m.path && m.liveScanEvents != nil
 }
@@ -372,6 +385,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			m.cancelLiveScan()
+			m.clearDirectoryListing()
+			delete(m.cache, m.path)
 			m.scanning = false
 			m.status = fmt.Sprintf("Scan failed: %v", msg.err)
 			return m, nil
@@ -1050,6 +1065,7 @@ func (m model) goBack() (tea.Model, tea.Cmd) {
 
 	last := m.history[len(m.history)-1]
 	m.history = m.history[:len(m.history)-1]
+	m.multiSelected, m.largeMultiSelected = nil, nil
 	m.path = last.Path
 	m.selected = last.Selected
 	m.offset = last.EntryOffset
@@ -1217,7 +1233,7 @@ func (m model) enterSelectedDir() (tea.Model, tea.Cmd) {
 			m.scanning = false
 			return m, nil
 		}
-		m.lastTotalFiles = 0
+		m.clearDirectoryListing()
 		cmd := tea.Batch(m.scanCmd(m.path), m.startTick())
 		return m, cmd
 	}

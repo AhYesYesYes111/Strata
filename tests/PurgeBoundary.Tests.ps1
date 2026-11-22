@@ -537,7 +537,8 @@ Describe 'Purge dry run without a console' {
         Should -Invoke Remove-ProjectArtifacts -Times 0 -Exactly
     }
 
-    It 'still needs the selection list for a real run' {
+    It 'opens the selection list for a real run in a console' {
+        Mock Test-MoleInteractiveOutput { $true }
         $DryRun = $false
         & { Set-StrictMode -Version Latest; Main }
         Should -Invoke Show-ProjectSelectionMenu -Times 1 -Exactly
@@ -556,12 +557,13 @@ Describe 'Purge dry run without a console' {
         Test-Path -LiteralPath (Join-Path $userHome '.config\mole\operations.log') | Should -BeFalse
     }
 
-    It 'a real run with piped input and output still stops at the selection list' {
+    It 'a real run with piped input and output refuses before discovery' {
         $userHome = New-PurgeHome
         $before = Get-PurgeHomeState $userHome
         $run = Invoke-PurgeChild -Arguments @() -UserHome $userHome
         $run.ExitCode | Should -Not -Be 0 -Because $run.Output
-        $run.Output | Should -Not -Match 'Purge complete'
+        $run.Output | Should -Match 'interactive terminal.*mo purge --dry-run'
+        $run.Output | Should -Not -Match 'Searching in|ReadKey|Purge complete'
         Get-PurgeHomeState $userHome | Should -BeExactly $before
     }
 }

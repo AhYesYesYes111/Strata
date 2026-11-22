@@ -281,64 +281,88 @@ function Test-IsAdmin {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Add-ToUserPath {
-    param([string]$Directory)
+function Open-UserEnvironmentKey {
+    param([bool]$Writable, [bool]$Create)
+    if ($Create) { return [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment") }
+    return [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $Writable)
+}
 
-    $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-
-    if ($currentPath -split ";" | Where-Object { $_ -eq $Directory }) {
-        Write-Info "Already in PATH: $Directory"
-        return $true
+function Send-EnvironmentChange {
+    # Direct registry writes need the same notification as SetEnvironmentVariable.
+    if (-not ('Mole.EnvironmentChange' -as [type])) {
+        Add-Type -Namespace Mole -Name EnvironmentChange -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern System.IntPtr SendMessageTimeout(System.IntPtr hwnd, uint msg, System.UIntPtr wParam,
+    string lParam, uint flags, uint timeout, out System.UIntPtr result);
+'@
     }
+    $result = [UIntPtr]::Zero
+    $null = [Mole.EnvironmentChange]::SendMessageTimeout([IntPtr]65535, 0x001A, [UIntPtr]::Zero, "Environment", 2, 1000, [ref]$result)
+}
 
-    $newPath = if ($currentPath) { "$currentPath;$Directory" } else { $Directory }
+function Update-UserPath {
+    param([string]$Directory, [switch]$Remove, [switch]$DryRun)
 
+    $key = $null
     try {
-        [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
-        Write-Success "Added to PATH: $Directory"
+        $key = Open-UserEnvironmentKey -Writable (-not $DryRun) -Create (-not ($Remove -or $DryRun))
+        if ($null -eq $key) { return $true }
+        $currentPath = $key.GetValue("Path", $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $kind = [Microsoft.Win32.RegistryValueKind]::String
+        if ($null -ne $currentPath) {
+            $kind = $key.GetValueKind("Path")
+            if ($kind -notin 'String', 'ExpandString') { throw "Unsupported user PATH registry type: $kind" }
+        }
 
-        # Update current session
-        $env:PATH = "$env:PATH;$Directory"
-        return $true
+        $found = $false
+        $remaining = foreach ($entry in ($currentPath -split ';')) {
+            $resolved = if ($kind -eq 'ExpandString') { [Environment]::ExpandEnvironmentVariables($entry) } else { $entry }
+            if ($resolved -eq $Directory) { $found = $true }
+            else { $entry }
+        }
+        if ($Remove) {
+            if (-not $found) { return $true }
+            if ($DryRun) {
+                Write-MoleDryRun "Would remove from PATH: $Directory"
+                return $true
+            }
+            $newPath = $remaining -join ';'
+        }
+        else {
+            if ($found) {
+                Write-Info "Already in PATH: $Directory"
+                return $true
+            }
+            $newPath = if ($currentPath) { "$currentPath;$Directory" } else { $Directory }
+        }
+        $key.SetValue("Path", $newPath, $kind)
     }
     catch {
         Write-MoleError "Failed to update PATH: $_"
         return $false
     }
+    finally {
+        if ($null -ne $key) { $key.Dispose() }
+    }
+
+    try { Send-EnvironmentChange }
+    catch { Write-MoleWarning "PATH saved. Sign out and back in to refresh it." }
+    if ($Remove) { Write-Success "Removed from PATH: $Directory" }
+    else {
+        $env:PATH = "$env:PATH;$Directory"
+        Write-Success "Added to PATH: $Directory"
+    }
+    return $true
+}
+
+function Add-ToUserPath {
+    param([string]$Directory)
+    Update-UserPath -Directory $Directory
 }
 
 function Remove-FromUserPath {
     param([string]$Directory, [switch]$DryRun)
-
-    $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-
-    if (-not $currentPath) {
-        return $true
-    }
-
-    # A PATH that does not hold the folder is left exactly as it is: writing it
-    # back would drop empty segments and store expanded values for nothing.
-    if (@($currentPath -split ";") -notcontains $Directory) {
-        return $true
-    }
-
-    $paths = $currentPath -split ";" | Where-Object { $_ -ne $Directory -and $_ -ne "" }
-    $newPath = $paths -join ";"
-
-    if ($DryRun) {
-        Write-MoleDryRun "Would remove from PATH: $Directory"
-        return $true
-    }
-
-    try {
-        [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
-        Write-Success "Removed from PATH: $Directory"
-        return $true
-    }
-    catch {
-        Write-MoleError "Failed to update PATH: $_"
-        return $false
-    }
+    Update-UserPath -Directory $Directory -Remove -DryRun:$DryRun
 }
 
 # Reuse the host that is running the installer for the generated launchers and

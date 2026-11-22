@@ -2,6 +2,12 @@
 
 This is the handoff record for the `windows` branch of `tw93/Mole`, not the paid Windows app or the macOS CLI. Read [AGENTS.md](../AGENTS.md) and the area rules in `.claude/rules/` for current policy and [development pitfalls](development-pitfalls.md) for reusable lessons. Git history retains individual edits; this file records completed batches and their delivery boundaries. Recheck live state before resuming work.
 
+## 2026-11-22 fork audit
+
+The local changes against `363307f9` clear action targets on failed Analyze enumeration and on return to the parent. The installer edits the raw user PATH while preserving its registry type and other entries. Commands that need a selection now refuse before discovery when the console is unavailable. Their existing preview and list modes remain accessible.
+
+The three Analyze regressions failed against the baseline and passed under the race detector after the fix. The complete Go tests passed with Go 1.26.10 on macOS. The Windows amd64 and arm64 programs cross-built, the amd64 test binaries cross-built, and Windows-targeted Go vet passed. The Python suite ran 32 tests with four platform skips. PowerShell 7.7.0 on macOS parsed all 61 scripts. With a simulated registry, raw PATH round trips and removal previews preserved expandable and plain string values. Each of the three command entry functions gave its read-only alternative and exited 1 with a simulated noninteractive console. Native registry and launcher-level Pester cases need Windows PowerShell 5.1 and PowerShell 7 on Windows. Delivery is local source.
+
 ## 2026-11-18: AI CLI superseded releases
 
 Baseline `e9f92fcb`, source `642b6e3e`. `Clear-AiCliOldVersions` in `lib/clean/dev.ps1` removes the old releases of Claude Code, Codex, Cursor Agent and Copilot CLI with the layouts measured on Windows; rules are in `.claude/rules/clean.md`, residual risk in `SECURITY_AUDIT.md`. An independent review before the commit found two defects that disabled part of the feature (Cursor's name-form count threw under strict mode on Windows PowerShell 5.1; Codex compared an 8.3 profile spelling with a junction's long target) and eight smaller ones, all fixed.

@@ -98,6 +98,7 @@ Describe "Uninstall selection under strict mode" {
         Mock Write-Host {}
         Mock Write-Info {}
         Mock Write-MoleWarning {}
+        Mock Test-MoleInteractiveOutput { $true }
         Mock Get-InstalledApplications { $script:TestApps }
         Mock Show-AppSelectionMenu { $script:TestApps[0] }
         Mock Read-Host { "y" }
@@ -209,7 +210,8 @@ Describe "Uninstall selection under strict mode" {
             Should -Invoke Show-UninstallList -Times 0 -Exactly
         }
 
-        It "Still needs the selection list for a real run" {
+        It "Opens the selection list for a real run in a console" {
+            Mock Test-MoleInteractiveOutput { $true }
             Mock Show-AppSelectionMenu { return @() }
 
             & { Set-StrictMode -Version Latest; Main }
@@ -1558,6 +1560,7 @@ Describe 'Charge limit uninstall notice' {
             PackageFullName=($Identity + '_1.0.0.0_x64__example'); InstallLocation=''
             UninstallString='C:\fixture\uninstall.exe'; QuietUninstallString=$null; WindowsInstaller=$false
         }
+        Mock Test-MoleInteractiveOutput { $true }
         Mock Get-InstalledApplications { $script:ChargeApp }
         Mock Show-AppSelectionMenu { $script:ChargeApp }
         Main

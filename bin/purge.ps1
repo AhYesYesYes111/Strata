@@ -830,6 +830,12 @@ function Main {
         Set-DryRunMode -Enabled $true
     }
 
+    $interactive = Test-MoleInteractiveOutput
+    if (-not $interactive -and -not $script:MoleDryRunMode) {
+        Write-MoleError "Selection requires an interactive terminal. Run 'mo purge' in a terminal, or use 'mo purge --dry-run' to preview."
+        exit 1
+    }
+
     # Clear screen
     Clear-MoleScreen
 
@@ -882,7 +888,7 @@ function Main {
 
     # Project selection. Without a console to pick from, a preview covers every
     # project, as Mole CLI (macOS) does; a real run still needs the list.
-    if ($script:MoleDryRunMode -and -not (Test-MoleInteractiveOutput)) {
+    if (-not $interactive) {
         $selected = $projects
     }
     else {

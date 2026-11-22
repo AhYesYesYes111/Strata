@@ -390,6 +390,28 @@ Describe "Machine-readable output through installed launcher call shapes" {
         }
     }
 
+    It "Requires a console for <Command> and suggests the read-only command" -ForEach @(
+        @{ Command = 'installer'; Preview = 'mo installer --dry-run' },
+        @{ Command = 'uninstall'; Preview = 'mo uninstall --list' }
+    ) {
+        $profileDir = Join-Path $TestDrive $Command
+        New-Item -ItemType Directory -Path $profileDir | Out-Null
+        $saved = $env:USERPROFILE
+        $savedDryRun = $env:MOLE_DRY_RUN
+        try {
+            $env:USERPROFILE = $profileDir
+            $env:MOLE_DRY_RUN = $null
+            $result = Invoke-MoleShape -Shape File -Mole (Join-Path $script:WindowsDir "mole.ps1") -Arguments @($Command) -EmptyInput
+        }
+        finally {
+            $env:USERPROFILE = $saved
+            $env:MOLE_DRY_RUN = $savedDryRun
+        }
+        $result.ExitCode | Should -Be 1
+        $result.Text | Should -Match "interactive terminal"
+        $result.Text | Should -Match ([regex]::Escape($Preview))
+    }
+
     It "Prints the cached uninstall inventory as JSON through <Shape><Label>" -ForEach @(
         @{ Shape = "File"; Debug = $false; Label = "" },
         @{ Shape = "Command"; Debug = $false; Label = "" },
