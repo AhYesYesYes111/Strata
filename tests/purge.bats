@@ -212,6 +212,24 @@ age() { find "$1" -exec touch -h -d '30 days ago' {} +; }
     [ -d "$TEST_ROOT/elsewhere/app/node_modules" ]
 }
 
+@test "the removal sink refuses a folder holding a bind mount from the same filesystem" {
+    make_node_project "$HOME/www/app"
+    make_node_project "$HOME/www/other"
+    mkdir -p "$HOME/www/app/node_modules/.cache/data"
+    printf '41 1 259:2 / / rw - ext4 /dev/vda2 rw\n41 1 259:2 /victim %s rw - ext4 /dev/vda2 rw\n' \
+        "$(readlink -f -- "$HOME/www/app/node_modules/.cache/data")" > "$TEST_ROOT/mountinfo"
+    purge_run '_MOLE_MOUNTINFO="'"$TEST_ROOT"'/mountinfo"
+        p="$HOME/www/app/node_modules"; id=$(mole_purge_identity "$p")
+        mole_artifact_path_ok "$p" "$HOME/www" "$id" && echo bound=ok || echo bound=refused
+        rc=0; mole_remove_artifact "$p" "$HOME/www" "$id" || rc=$?; echo "bound-rc=$rc"
+        q="$HOME/www/other/node_modules"; qid=$(mole_purge_identity "$q")
+        mole_artifact_path_ok "$q" "$HOME/www" "$qid" && echo plain=ok || echo plain=refused'
+    [[ "$output" == *"bound=refused"* ]]
+    [[ "$output" == *"bound-rc=1"* ]]
+    [[ "$output" == *"plain=ok"* ]]
+    [ -d "$HOME/www/app/node_modules/.cache/data" ]
+}
+
 @test "mo purge: outside a terminal it needs --yes or --dry-run" {
     make_node_project "$HOME/www/app"
     run bash "$REPO/mole" purge < /dev/null
@@ -378,4 +396,20 @@ rc=2 ok=false"* ]]
 @test "menu search matches every word in any order" {
     run python3 "$MOLE_TEST_REPO/tests/menu_search_pty.py"
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+}
+
+@test "purge excludes an artifact with a nested mount before measuring the preview" {
+    make_node_project "$HOME/www/bound"
+    make_node_project "$HOME/www/plain"
+    local path="$HOME/www/bound/node_modules/left-pad"
+    printf '41 1 259:2 / / rw - ext4 /dev/vda rw\n42 41 259:2 /other %s rw - ext4 /dev/vda rw\n' \
+        "$path" > "$HOME/mountinfo"
+    purge_run '_MOLE_MOUNTINFO="$HOME/mountinfo"
+        mole_purge_proc_snapshot() { return 1; }
+        mole_purge_size_kb() { echo "$1" >> "$HOME/sized"; echo 10; }
+        DRY_RUN=true; scan; printf "planned=%s\n" "${P_PATH[@]}"'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"planned=$HOME/www/plain/node_modules"* ]]
+    [ "$(cat "$HOME/sized")" = "$HOME/www/plain/node_modules" ]
+    [ -d "$path" ]
 }

@@ -7,6 +7,13 @@ Mole CLI (Linux) re-implements Mole's product values and safety contracts for Li
 
 Each row names the source (branch, commit or entry), the Linux status (`Pending`, `Implemented`, `Intentional difference` or `Not applicable`) with a reason, and the verification. Only a published `V*-linux` release proves `Released`.
 
+## Fork audit, 2026-11-22
+
+| Contract | Source | Mole CLI (Linux) status | Verification |
+| --- | --- | --- | --- |
+| Malformed proxy settings display an unknown host | Mole CLI (Windows) at `363307f9`, `displayProxyHost` | Implemented in the working tree based on `81d4a2f7`, `collectProxyFromEnv` | `TestProxyEnvironmentCredentialsStayOutOfDiagnostics`. See the [verification record](docs/ledger.md#verification-record). |
+| Directory navigation acts only on the current view, and full scans cannot supply a filtered overview row | Fork audit of Mole CLI (macOS) at `aab7d990` and Mole CLI (Linux) at `81d4a2f7`. Navigation also affects Mole CLI (Windows) at `363307f9`. | Implemented in `cmd/analyze/update.go`, the overview readers and the prefetch worker | `TestMissingChildCannotActOnParentRows`, `TestDirectoryScanSkipsHomeCacheOverviewSnapshot`, and `TestOldDownloadsOverviewIgnoresFullDirectoryCache`. See the [verification record](docs/ledger.md#verification-record). |
+
 ## Intentional differences
 
 | Contract | Status | Reason |

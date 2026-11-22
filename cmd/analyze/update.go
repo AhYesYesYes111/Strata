@@ -170,6 +170,21 @@ func (m *model) cancelLiveScan() {
 	m.autoSortLiveEntries = false
 }
 
+func (m *model) clearActionTargets() {
+	m.multiSelected, m.largeMultiSelected = nil, nil
+	m.deleteConfirm, m.deleteTarget = false, nil
+}
+
+func (m *model) clearDirectoryRows() {
+	m.clearActionTargets()
+	m.entries, m.entriesAll = nil, nil
+	m.largeFiles, m.largeFilesAll = nil, nil
+	m.selected, m.offset = 0, 0
+	m.largeSelected, m.largeOffset = 0, 0
+	m.totalSize, m.totalFiles = 0, 0
+	m.scanState, m.scanTransient = scanUnavailable, false
+}
+
 func (m model) isCurrentLiveScan(id int64, path string) bool {
 	return id != 0 && id == m.liveScanID && path == m.path && m.liveScanEvents != nil
 }
@@ -291,15 +306,6 @@ func (m *model) finishLiveScan(result scanResult) {
 	result.Entries = cached.Entries
 	result.LargeFiles = cached.LargeFiles
 	publication := m.newBackgroundCacheWrite(context.Background(), m.path)
-	if m.scanState == scanComplete && m.totalSize > 0 {
-		if m.overviewSizeCache == nil {
-			m.overviewSizeCache = make(map[string]int64)
-		}
-		m.overviewSizeCache[m.path] = m.totalSize
-		go func(path string, size int64) {
-			_ = publication.commit(func() error { return storeOverviewSize(path, size) })
-		}(m.path, m.totalSize)
-	}
 	go func(path string, scan scanResult) {
 		_ = saveCacheToDiskWithOptions(publication, path, scan, false)
 	}(m.path, result)
@@ -439,6 +445,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cancelLiveScan()
 		m.scanning = false
 		if msg.err != nil {
+			m.clearDirectoryRows()
+			delete(m.cache, m.path)
 			m.status = fmt.Sprintf("Scan failed: %v", msg.err)
 			return m, nil
 		}
@@ -462,16 +470,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyLargeFilter()
 		m.selectEntryPath(selectedPath)
 		m.cache[m.path] = historyEntryFromScanResult(m.path, result, m.cache[m.path], msg.stale)
-		if !msg.stale && m.scanState == scanComplete && m.totalSize > 0 {
-			if m.overviewSizeCache == nil {
-				m.overviewSizeCache = make(map[string]int64)
-			}
-			m.overviewSizeCache[m.path] = m.totalSize
-			publication := m.newBackgroundCacheWrite(context.Background(), m.path)
-			go func(path string, size int64) {
-				_ = publication.commit(func() error { return storeOverviewSize(path, size) })
-			}(m.path, m.totalSize)
-		}
 
 		if msg.stale {
 			m.status = fmt.Sprintf("Loaded cached data for %s, refreshing...", displayPath(m.path))
@@ -501,6 +499,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.cancelLiveScan()
 			m.scanning = false
+			m.clearDirectoryRows()
+			delete(m.cache, m.path)
 			m.status = fmt.Sprintf("Scan failed: %v", msg.err)
 			return m, nil
 		}
@@ -1203,6 +1203,7 @@ func (m model) goBack() (tea.Model, tea.Cmd) {
 
 	last := m.history[len(m.history)-1]
 	m.history = m.history[:len(m.history)-1]
+	m.clearActionTargets()
 	m.path = last.Path
 	m.selected = last.Selected
 	m.offset = last.EntryOffset
@@ -1282,8 +1283,7 @@ func (m *model) switchToOverviewMode() tea.Cmd {
 	m.largeFiles = nil
 	m.largeSelected = 0
 	m.largeOffset = 0
-	m.deleteConfirm = false
-	m.deleteTarget = nil
+	m.clearActionTargets()
 	m.selected = 0
 	m.offset = 0
 	m.hydrateOverviewEntries()
@@ -1325,14 +1325,13 @@ func (m model) enterSelectedDir() (tea.Model, tea.Cmd) {
 			m.history = append(m.history, snapshotFromModel(m))
 		}
 		m.path = selected.Path
-		m.selected = 0
-		m.offset = 0
+		// The parent is in history. Until the child has a result, no rows
+		// or top files from the parent may be selected or acted upon.
+		m.clearDirectoryRows()
 		m.status = "Scanning..."
 		m.scanning = true
 		m.isOverview = false
 		m.viewNeedsRefresh = false
-		m.multiSelected = make(map[string]bool)
-		m.largeMultiSelected = make(map[string]bool)
 
 		atomic.StoreInt64(m.filesScanned, 0)
 		atomic.StoreInt64(m.dirsScanned, 0)

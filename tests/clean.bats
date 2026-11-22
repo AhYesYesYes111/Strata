@@ -1258,3 +1258,29 @@ yay build cache"
     XDG_CACHE_HOME="$HOME/.cache/" mole_run clean 'echo "$MOLE_CACHE_HOME"; cache_home_redirected || echo plain'
     [ "$output" = "$HOME/.cache"$'\n'"plain" ]
 }
+
+@test "Trash whitelist pairs a protected payload or restore info and sizes only eligible entries" {
+    local trash="$HOME/.local/share/Trash" name
+    mkdir -p "$trash/files" "$trash/info" "$HOME/.config/mole"
+    for name in folder by-info disposable; do
+        mkdir -p "$trash/files/$name"
+        printf 'x' > "$trash/files/$name/file"
+        printf 'metadata' > "$trash/info/$name.trashinfo"
+    done
+    printf '%s\n' "$trash/files/folder/file" "$trash/info/by-info.trashinfo" > "$HOME/.config/mole/whitelist"
+    printf '41 1 259:2 / / rw - ext4 /dev/vda rw\n' > "$HOME/mountinfo"
+    mole_run clean '_MOLE_MOUNTINFO="$HOME/mountinfo"; mole_whitelist_load; DRY_RUN=true; clean_trash; echo "count=$TOTAL_ITEMS"'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"count=1"* ]]
+    [ -f "$trash/files/disposable/file" ]
+    [ -f "$trash/info/disposable.trashinfo" ]
+    mole_run clean '_MOLE_MOUNTINFO="$HOME/mountinfo"; mole_whitelist_load; clean_trash; echo "count=$TOTAL_ITEMS"'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"count=1"* ]]
+    [ ! -e "$trash/files/disposable" ]
+    [ ! -e "$trash/info/disposable.trashinfo" ]
+    for name in folder by-info; do
+        [ -f "$trash/files/$name/file" ]
+        [ -f "$trash/info/$name.trashinfo" ]
+    done
+}

@@ -313,7 +313,7 @@ func (m *model) hydrateOverviewEntries() {
 			m.entries[i].Size = size
 			continue
 		}
-		if size, state, err := loadOverviewCachedMeasurement(m.entries[i].Path); err == nil {
+		if size, state, err := loadStoredOverviewMeasurement(m.entries[i].Path); err == nil {
 			m.entries[i].Size = size
 			m.entries[i].State = state
 			// The in-memory map holds sizes only, so it keeps complete ones.

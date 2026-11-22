@@ -379,8 +379,6 @@ func scanPathConcurrentWithLimiter(ctx context.Context, root string, filesScanne
 	})
 
 	isRootDir := root == "/"
-	home := os.Getenv("HOME")
-	isHomeDir := home != "" && root == home
 	noatime := currentMountTable().noAccessTime(root)
 
 scanChildren:
@@ -431,55 +429,6 @@ scanChildren:
 			// Another filesystem is mounted here: list it, do not walk it.
 			if isForeignMountPath(fullPath) {
 				trySend(ctx, entryChan, mountedDirEntry(child.Name(), fullPath), scanSendTimeout)
-				continue
-			}
-
-			// ~/.cache is scanned separately; reuse cache when possible.
-			if isHomeDir && child.Name() == homeCacheDirName {
-				processDir := func(name, path string) {
-					if ctx.Err() != nil {
-						return
-					}
-					result := scanResult{}
-					if cachePolicy == scanCacheReuse {
-						if cached, state, err := loadStoredOverviewMeasurement(path); err == nil && cached > 0 {
-							result.TotalSize = cached
-							result.State = state
-						}
-					}
-					if result.TotalSize <= 0 {
-						result = scanSubdirWithCache(ctx, path, largeFileChan, limiter, filesScanned, dirsScanned, bytesScanned, currentPath, cachePolicy, publication)
-					}
-					if ctx.Err() != nil {
-						return
-					}
-					noteChildResult(result)
-					atomic.AddInt64(&total, result.TotalSize)
-					if result.TotalFiles > 0 {
-						subtreeFilesScanned.Add(result.TotalFiles)
-					}
-					if result.dedupedHardlink {
-						dedupedHardlink.Store(true)
-					}
-					atomic.AddInt64(dirsScanned, 1)
-
-					trySend(ctx, entryChan, dirEntry{
-						Name:       name,
-						Path:       path,
-						Size:       result.TotalSize,
-						State:      result.State,
-						IsDir:      true,
-						LastAccess: time.Time{},
-					}, scanSendTimeout)
-				}
-				if limiter.tryAcquireEntry() {
-					wg.Go(func() {
-						defer limiter.releaseEntry()
-						processDir(child.Name(), fullPath)
-					})
-				} else {
-					processDir(child.Name(), fullPath)
-				}
 				continue
 			}
 
@@ -718,6 +667,10 @@ func scanSubdirWithCache(ctx context.Context, root string, largeFileChan chan<- 
 }
 
 func shouldFoldDirWithPath(name, path string) bool {
+	// Keep the home cache browsable, even though nested tool caches are folded.
+	if name == homeCacheDirName && path == filepath.Join(os.Getenv("HOME"), name) {
+		return false
+	}
 	if foldDirs[name] {
 		return true
 	}
@@ -886,6 +839,10 @@ func measureOverviewSizeWithPublication(ctx context.Context, path string, public
 	if err != nil && size == 0 && ctx.Err() == nil {
 		size, err = getDirectoryLogicalSizeWithExclude(ctx, path, excludePath, ignoreNames)
 	}
+	return publishOverviewMeasurement(publication, path, size, err)
+}
+
+func publishOverviewMeasurement(publication *scanPublication, path string, size int64, err error) (int64, error) {
 	if overviewMeasurementStorable(size, err) {
 		store := func() error { return storeOverviewMeasurement(path, size, err != nil) }
 		if publication != nil {

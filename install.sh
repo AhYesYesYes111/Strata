@@ -164,6 +164,19 @@ fi
 command -v tar > /dev/null 2>&1 || fail "tar is required."
 command -v sha256sum > /dev/null 2>&1 || fail "sha256sum is required."
 
+# All install channels share launchers and the nightly toolchain. Hold the
+# same kernel lock until EXIT cleanup has finished, including rollback.
+command -v flock > /dev/null 2>&1 || fail "Install flock (util-linux) and retry."
+mkdir -p "$HOME/.local"
+exec 9>> "$HOME/.local/.mole-install.lock"
+lock_rc=0
+flock -n -E 75 9 || lock_rc=$?
+case "$lock_rc" in
+    0) ;;
+    75) fail "Another Mole install is running. Retry when it finishes." ;;
+    *) fail "Could not lock the install. Check that $HOME/.local supports file locking and retry." ;;
+esac
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/mole-install.XXXXXX")"
 NEW="$INSTALL_ROOT.new.$$"
 OLD="$INSTALL_ROOT.old.$$"
@@ -401,7 +414,7 @@ if [[ -e "$INSTALL_ROOT" ]]; then
         fail "$INSTALL_ROOT exists and is not an installed Mole; move it away and retry."
     mv -- "$INSTALL_ROOT" "$OLD"
 fi
-mv -- "$NEW" "$INSTALL_ROOT" || fail "Could not move the new version into $INSTALL_ROOT."
+mv -T -- "$NEW" "$INSTALL_ROOT" || fail "Could not move the new version into $INSTALL_ROOT."
 
 mkdir -p "$BIN_DIR"
 for name in mo mole; do

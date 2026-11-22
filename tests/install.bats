@@ -118,3 +118,35 @@ install_release() {
     [ "$status" -eq 0 ]
     [ "$output" = "0.6.0" ]
 }
+
+@test "overlapping installers cannot both publish or leave a nested install" {
+    make_release 0.1.0
+    cp "$TEST_ROOT/SHA256SUMS.txt" "$TEST_ROOT/first.sums"
+    make_release 0.2.0
+    REAL_TAR="$(command -v tar)"
+    export REAL_TAR
+    fake_command tar 'touch "$HOME/unpacking"
+        for ((i=0; i<200; i++)); do
+            [[ -e "$HOME/proceed" ]] && exec "$REAL_TAR" "$@"
+            sleep 0.05
+        done
+        exit 1'
+    bash "$REPO/install.sh" --archive "$TEST_ROOT/mole-0.1.0-linux-x86_64.tar.gz" --sums "$TEST_ROOT/first.sums" > "$TEST_ROOT/first.log" 2>&1 &
+    local pid=$!
+    for ((i=0; i<100; i++)); do
+        [[ -f "$HOME/unpacking" ]] && break
+        sleep 0.05
+    done
+    [ -f "$HOME/unpacking" ]
+    install_release 0.2.0
+    local second_rc=$status second_output="$output"
+    touch "$HOME/proceed"
+    wait "$pid"
+    [ "$second_rc" -ne 0 ]
+    [[ "$second_output" == *"Another Mole install"* ]]
+    [ "$(cat "$HOME/.local/share/mole/VERSION")" = 0.1.0 ]
+    install_release 0.2.0
+    [ "$status" -eq 0 ]
+    [ "$(cat "$HOME/.local/share/mole/VERSION")" = 0.2.0 ]
+    [ -z "$(find "$HOME/.local/share/mole" -name 'mole.new.*' -print -quit)" ]
+}

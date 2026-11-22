@@ -157,12 +157,13 @@ scan() {
     for ((i = 0; i < n; i++)); do
         path="${found[i]}"
         start_inline_spinner "Checking $((i + 1))/$n $(mole_display_path "$path")..."
+        id=$(mole_purge_identity "$path") || continue
+        mole_artifact_path_ok "$path" "${found_root[i]}" "$id" || continue
         reason=$(mole_purge_refusal "$path") || reason=""
         if [[ "$reason" != ok ]]; then
             debug_log "purge keeps $path: $reason"
             continue
         fi
-        id=$(mole_purge_identity "$path") || continue
         if [[ $busy_rc -ne 0 ]] || mole_purge_project_busy "${path%/*}" "${found_root[i]}"; then
             state=busy
         else

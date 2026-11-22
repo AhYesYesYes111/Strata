@@ -272,7 +272,7 @@ func collectProxyFromEnv(getenv func(string) string) ProxyStatus {
 
 		host := parseProxyHost(val)
 		if host == "" {
-			host = val
+			host = "Unknown"
 		}
 		return ProxyStatus{Enabled: true, Type: proxyType, Host: host}
 	}

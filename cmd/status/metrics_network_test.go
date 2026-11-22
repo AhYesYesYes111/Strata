@@ -391,3 +391,21 @@ func TestParseDefaultRouteInterfacePicksLowestMetricUpRoute(t *testing.T) {
 		t.Fatalf("parseDefaultRouteInterface(no routes) = %q, want empty", got)
 	}
 }
+
+func TestProxyEnvironmentCredentialsStayOutOfDiagnostics(t *testing.T) {
+	for raw, want := range map[string]string{
+		"http://user:secret@proxy.example:80":  "proxy.example:80",
+		"http://user:secret@proxy.example:bad": "Unknown",
+	} {
+		got := collectProxyFromEnv(func(key string) string {
+			if key == "HTTPS_PROXY" {
+				return raw
+			}
+			return ""
+		})
+		b, err := json.Marshal(got)
+		if err != nil || !got.Enabled || got.Host != want || strings.Contains(string(b), "secret") {
+			t.Fatalf("unexpected proxy diagnostic: %s, %v", b, err)
+		}
+	}
+}

@@ -38,7 +38,8 @@ import (
 // v12: the old-Downloads overview total skips a share or FUSE mount that is
 // itself a child of Downloads.
 // v13: Home totals count a file hard-linked across its children once.
-const cacheSchemaVersion = 13
+// v14: directory scans and filtered overview rows keep separate totals.
+const cacheSchemaVersion = 14
 
 type overviewSizeSnapshot struct {
 	Size          int64     `json:"size"`
@@ -285,21 +286,6 @@ func persistOverviewSnapshotLocked() error {
 		return err
 	}
 	return nil
-}
-
-func loadOverviewCachedMeasurement(path string) (int64, scanState, error) {
-	if path == "" {
-		return 0, scanComplete, fmt.Errorf("empty path")
-	}
-	if snapshot, state, err := loadStoredOverviewMeasurement(path); err == nil {
-		return snapshot, state, nil
-	}
-	cacheEntry, err := loadCacheFromDisk(path)
-	if err != nil {
-		return 0, scanComplete, err
-	}
-	_ = storeOverviewMeasurement(path, cacheEntry.TotalSize, cacheEntry.State != scanComplete)
-	return cacheEntry.TotalSize, cacheEntry.State, nil
 }
 
 // moleCacheRoot is the single definition of the shared cache location; both
@@ -882,7 +868,7 @@ func prefetchOverviewCache(ctx context.Context, jobs map[string]*scanPublication
 				return
 			}
 
-			_, _ = measureOverviewSizeWithPublication(publication.ctx, path, publication)
+			_, _ = measureInsightSizeWithPublication(publication.ctx, path, publication)
 		})
 	}
 	wg.Wait()

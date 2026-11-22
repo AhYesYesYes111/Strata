@@ -129,7 +129,8 @@ func measureInsightSizeWithPublication(ctx context.Context, path string, publica
 	home := os.Getenv("HOME")
 
 	if home != "" && path == filepath.Join(home, "Downloads") {
-		return measureOldDownloads(ctx, path, 90)
+		size, err := measureOldDownloads(ctx, path, 90)
+		return publishOverviewMeasurement(publication, path, size, err)
 	}
 
 	return measureOverviewSizeWithPublication(ctx, path, publication)
