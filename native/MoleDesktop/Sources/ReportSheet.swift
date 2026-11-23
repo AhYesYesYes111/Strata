@@ -71,13 +71,18 @@ struct ReportSheet: View {
             HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(title).font(.title2.weight(.semibold))
-                    Text(report.summary).font(.subheadline).foregroundStyle(StrataColor.muted).textSelection(.enabled)
+                    if confirmedClean == nil {
+                        Text(report.summary).font(.subheadline).foregroundStyle(StrataColor.muted).textSelection(.enabled)
+                    }
                 }
                 Spacer()
                 Button(action: exportReport) { Label(tr("导出全部…", "Export all…"), systemImage: "square.and.arrow.up") }
                     .help(tr("存储本次报告的全部已载入明细和运行记录", "Save all loaded entries and the run log")).keyboardShortcut("s")
-                Button(tr("完成", "Done")) { dismiss() }.keyboardShortcut(.cancelAction)
+                if confirmedClean == nil {
+                    Button(tr("完成", "Done")) { dismiss() }.keyboardShortcut(.cancelAction)
+                }
             }
+            if confirmedClean != nil { cleanupEstimate }
             if let notice = report.detailNotice { Feedback(message: notice) }
             if let exportError { Feedback(message: tr("导出失败。", "Export failed. ") + exportError) }
             HStack(spacing: 12) {
@@ -96,30 +101,61 @@ struct ReportSheet: View {
                 .background(StrataColor.panel, in: RoundedRectangle(cornerRadius: 11))
                 .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(StrataColor.border))
             if confirmedClean != nil {
+                Label {
+                    Text(tr("清理会永久删除符合条件的项目，默认也会清空个人废纸篓。",
+                            "Cleanup permanently deletes eligible items and empties your Trash by default."))
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
+                .font(.callout)
                 HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if let cleanTimingText {
-                            Label(cleanTimingText, systemImage: "clock").font(.callout)
-                        }
-                        Text(tr("整轮清理的范围由 Mole 重新扫描确定。", "Mole scans again to determine which items to remove."))
+                    if filtering {
+                        Text(tr("搜索仅筛选显示，清理仍涵盖整份清单。", "Search filters this view. Cleanup covers the full plan."))
                             .font(.caption).foregroundStyle(StrataColor.muted)
                     }
-                    Spacer()
-                    Button(tr("执行整轮清理…", "Run full cleanup…")) { confirming = true }.buttonStyle(ActionStyle())
+                    Spacer(minLength: 0)
+                    Button(tr("取消", "Cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
+                    Button(tr("继续清理…", "Continue cleanup…")) { confirming = true }
+                        .buttonStyle(ActionStyle(isPrimary: true))
                 }
             }
         }.padding(24)
-            .frame(minWidth: 550, idealWidth: 690, minHeight: 380, idealHeight: 455)
+            .frame(minWidth: 550, idealWidth: 690, minHeight: 380, idealHeight: confirmedClean == nil ? 455 : 505)
             .foregroundStyle(StrataColor.ink).background(StrataColor.paper)
             .onAppear {
-                if let first = report.groups.first { expanded.insert(first.id) }
+                if confirmedClean == nil, let first = report.groups.first { expanded.insert(first.id) }
             }
-            .alert(tr("永久清理本机符合条件的项目？", "Permanently remove eligible items from this Mac?"), isPresented: $confirming) {
+            .alert(tr("永久删除符合条件的项目？", "Permanently delete eligible items?"), isPresented: $confirming) {
                 Button(tr("取消", "Cancel"), role: .cancel) {}
-                Button(tr("执行整轮清理", "Run full cleanup"), role: .destructive) { confirmedClean?() }
+                Button(tr("永久清理", "Clean permanently"), role: .destructive) { confirmedClean?() }
             } message: {
-                Text((cleanTimingText.map { $0 + "\n\n" } ?? "") + tr("Mole 将重新扫描并按当前保护规则永久删除符合条件的项目，默认也会清空个人废纸篓。搜索仅筛选报告显示。预览与执行均使用普通用户权限。复查清单有变化时需要重新确认。执行期间文件仍可能发生变化。已完成的删除无法撤销。", "Mole will scan again, permanently remove eligible items, and empty your Trash by default. Search filters only this report. The preview and cleanup both use your user permissions. If the recheck finds a different list, you will be asked to review it again. Files can still change during cleanup. Deletions cannot be undone."))
+                Text(tr("清理默认会清空个人废纸篓，已删除的内容无法恢复。\n\nMole 会以当前用户权限重新核对整份清单和保护规则。清单有变化时，会请你重新审阅。清理期间文件仍可能变化。",
+                        "Your Trash will be emptied by default. Deleted items cannot be recovered.\n\nMole rechecks the full plan and protection rules with your user permissions. If the plan changes, you’ll review it again. Files may still change during cleanup."))
             }
+    }
+
+    private var cleanupEstimate: some View {
+        HStack(alignment: .center, spacing: 20) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(tr("预计释放空间", "Estimated space to free")).font(.subheadline).foregroundStyle(StrataColor.muted)
+                Text(verbatim: report.previewSize ?? "—")
+                    .font(.system(size: 30, weight: .semibold)).monospacedDigit().textSelection(.enabled)
+            }
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 6) {
+                if let count = report.previewItemCount {
+                    Label(tr("\(count) 个待清理项目", count == 1 ? "1 item to clean" : "\(count) items to clean"),
+                          systemImage: "list.bullet")
+                }
+                if let cleanTimingText {
+                    Label(cleanTimingText, systemImage: "clock").foregroundStyle(StrataColor.muted)
+                }
+            }.font(.callout).monospacedDigit()
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(StrataColor.panel, in: RoundedRectangle(cornerRadius: 11))
     }
 
     private var searchField: some View {
@@ -188,7 +224,9 @@ struct ReportSheet: View {
                                 Image(systemName: "folder").foregroundStyle(StrataColor.muted)
                                 Text(sectionTitle(group.title)).font(.headline)
                                 Spacer()
-                                Text(tr("\(group.entries.count) 条", "\(group.entries.count)")).font(.caption.monospacedDigit())
+                                Text(confirmedClean == nil ? tr("\(group.entries.count) 条", "\(group.entries.count)") :
+                                        tr("\(group.entries.count) 条路径", group.entries.count == 1 ? "1 path" : "\(group.entries.count) paths"))
+                                    .font(.caption.monospacedDigit())
                                     .foregroundStyle(StrataColor.muted)
                                 if !filtering {
                                     Image(systemName: "chevron.right").font(.caption)

@@ -31,6 +31,17 @@ private struct InstalledApplication: Identifiable {
     var id: URL { url }
 }
 
+private enum ApplicationSize {
+    case measured(Int64), unavailable
+
+    var text: String {
+        switch self {
+        case .measured(let bytes): return storageSize(bytes)
+        case .unavailable: return "—"
+        }
+    }
+}
+
 private struct AppInventory {
     var apps: [InstalledApplication] = []
     var partial = false
@@ -87,6 +98,7 @@ private struct AppInventory {
 struct SoftwarePage: View {
     @Environment(\.locale) private var locale
     @State private var inventory: AppInventory?
+    @State private var sizes: [URL: ApplicationSize] = [:]
     @State private var search = ""
     @State private var location: ApplicationLocation?
     @State private var generation = 0
@@ -136,6 +148,7 @@ struct SoftwarePage: View {
                                 Text(tr("名称", "Name"))
                                 Spacer()
                                 Text(tr("版本", "Version")).frame(width: 100, alignment: .leading)
+                                Text(tr("大小", "Size")).frame(width: 78, alignment: .trailing)
                                 Color.clear.frame(width: 22, height: 1)
                             }
                             .font(.caption.weight(.medium)).foregroundStyle(StrataColor.muted)
@@ -153,6 +166,10 @@ struct SoftwarePage: View {
                                     Text(verbatim: app.version ?? "—").font(.caption.monospacedDigit())
                                         .lineLimit(1).truncationMode(.middle).foregroundStyle(StrataColor.muted)
                                         .frame(width: 100, alignment: .leading)
+                                    Text(verbatim: sizes[app.url]?.text ?? "…")
+                                        .font(.caption.monospacedDigit()).foregroundStyle(StrataColor.muted)
+                                        .frame(width: 78, alignment: .trailing)
+                                        .help(tr("应用包占用的磁盘空间", "Disk space used by the app bundle"))
                                     Button {
                                         NSWorkspace.shared.activateFileViewerSelecting([app.url])
                                     } label: { Image(systemName: "folder").frame(width: 22, height: 22) }
@@ -172,8 +189,22 @@ struct SoftwarePage: View {
         }
         .task(id: generation) {
             inventory = nil
+            sizes = [:]
             guard let result = try? await AppInventory.scan(), !Task.isCancelled else { return }
             inventory = result
+            await withTaskGroup(of: (URL, Int64?).self) { group in
+                var apps = result.apps.makeIterator()
+                func enqueueNext() {
+                    guard let url = apps.next()?.url else { return }
+                    _ = group.addTaskUnlessCancelled { (url, try? await DiskScanner.allocatedDirectorySize(url)) }
+                }
+                for _ in 0..<3 { enqueueNext() }
+                for await (url, bytes) in group {
+                    guard !Task.isCancelled else { return }
+                    sizes[url] = bytes.map(ApplicationSize.measured) ?? .unavailable
+                    enqueueNext()
+                }
+            }
         }
     }
 }

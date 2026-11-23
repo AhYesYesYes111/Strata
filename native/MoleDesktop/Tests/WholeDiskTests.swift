@@ -54,6 +54,10 @@ private final class InventoryLog: @unchecked Sendable {
             }
         }
         precondition(result.totalBytes == expected && result.children.count == 2)
+        var rootInfo = stat()
+        precondition(lstat(folder.path, &rootInfo) == 0)
+        let size = try await DiskScanner.allocatedDirectorySize(folder)
+        precondition(size == expected + rootInfo.st_blocks * 512, "Bundle usage must count hard links once and never follow symlinks")
         for branch in result.entries {
             let local = try await DiskScanner.scan(branch.url)
             let cached = result.children[branch.url]!
@@ -134,6 +138,8 @@ private final class InventoryLog: @unchecked Sendable {
             try bytes.write(to: dir.appendingPathComponent("payload"))
         }
         let scoped = try await DiskScanner.scan(home, privacy: privacy)
+        let partialSize = try await DiskScanner.allocatedDirectorySize(home.appendingPathComponent("Projects", isDirectory: true))
+        precondition(partialSize == nil, "A skipped private subtree must not produce an exact app size")
         let homeBoundaries = scoped.entries.filter(\.requiresSelection)
         precondition(scoped.isPartial && homeBoundaries.count == 7)
         precondition(homeBoundaries.allSatisfy { $0.bytes == 0 && $0.isPartial })

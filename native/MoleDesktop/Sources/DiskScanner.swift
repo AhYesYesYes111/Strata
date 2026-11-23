@@ -153,9 +153,24 @@ enum DiskScanner {
                      privacy: DiskScanPrivacy = DiskScanPrivacy(),
                      onInventory: @escaping @Sendable (DiskScanResult) -> Void = { _ in },
                      onDirectory: @escaping @Sendable (String) -> Void = { _ in }) async throws -> DiskScanResult {
+        try await walk(root, wholeDisk: wholeDisk, selectedFolder: selectedFolder, privacy: privacy,
+                       onInventory: onInventory, onDirectory: onDirectory).result
+    }
+
+    static func allocatedDirectorySize(_ root: URL) async throws -> Int64? {
+        let (result, rootBytes) = try await walk(root, wholeDisk: false, selectedFolder: nil,
+                                                 privacy: DiskScanPrivacy(), onInventory: { _ in }, onDirectory: { _ in })
+        return result.isPartial ? nil : rootBytes + result.totalBytes
+    }
+
+    private static func walk(_ root: URL, wholeDisk: Bool, selectedFolder: URL?, privacy: DiskScanPrivacy,
+                             onInventory: @escaping @Sendable (DiskScanResult) -> Void,
+                             onDirectory: @escaping @Sendable (String) -> Void) async throws -> (result: DiskScanResult, rootBytes: Int64) {
         let worker = Task.detached(priority: .utility) {
             guard !privacy.needsSelection(root, selectedFolder: selectedFolder) else { throw DiskScanAccessError.selectFolder }
-            return try FolderWalk(root: root, wholeDisk: wholeDisk, privacy: privacy).scan(onInventory: onInventory, onDirectory: onDirectory)
+            let walker = FolderWalk(root: root, wholeDisk: wholeDisk, privacy: privacy)
+            let result = try walker.scan(onInventory: onInventory, onDirectory: onDirectory)
+            return (result, walker.rootBytes)
         }
         return try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
     }
@@ -215,6 +230,7 @@ private final class DirectoryWalk {
 }
 
 private final class FolderWalk {
+    private(set) var rootBytes: Int64 = 0
     private let root: URL
     private let wholeDisk: Bool
     private let privacy: DiskScanPrivacy
@@ -259,6 +275,7 @@ private final class FolderWalk {
             throw failure
         }
         guard let rootFrame = DirectoryFrame(fd: rootFD, url: root, privacy: privacy) else { throw posixError() }
+        rootBytes = rootInfo.st_blocks * 512
         devices.insert(rootInfo.st_dev)
         if wholeDisk {
             for url in [DiskScanner.startupRoot, DiskScanner.startupData] {

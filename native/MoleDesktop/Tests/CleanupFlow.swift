@@ -93,6 +93,8 @@ struct CleanupFlow {
         try require(clean.scanEstimate.basis == "参考上次扫描", "Completed preview did not calibrate scan timing")
         try require(UserDefaults.standard.data(forKey: timingKey) == initialClean, "Preview recorded a real clean duration")
         guard let captured = clean.report else { throw TestFailure(message: "Missing preview") }
+        try require(captured.previewSize == "8MB" && captured.previewItemCount == 1,
+                    "Review metrics did not match the CLI estimate")
         let raw = captured.transcript
         UserDefaults.standard.set(AppLanguage.english.rawValue, forKey: AppLanguage.key)
         try require(clean.report?.summary == "8MB reclaimable · 1 item", "Finished preview retained its original language")

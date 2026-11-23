@@ -32,7 +32,7 @@ struct CleanPage: View {
         }
         .sheet(isPresented: $showingReport) {
             if let report = model.report {
-                ReportSheet(heading: model.didClean ? ReportText("清理执行记录", "Cleanup log") : ReportText("清理预览明细", "Cleanup preview"), report: report,
+                ReportSheet(heading: reportHeading(report), report: report,
                             cleanTiming: report.canApplyClean ? { model.cleanTimingText } : nil,
                             confirmedClean: report.canApplyClean ? {
                                 showingReport = false
@@ -40,6 +40,12 @@ struct CleanPage: View {
                             } : nil)
             }
         }
+    }
+
+    private func reportHeading(_ report: CleanupReport) -> ReportText {
+        if report.canApplyClean { return ReportText("审阅清理", "Review cleanup") }
+        if report.completedClean { return ReportText("清理执行记录", "Cleanup log") }
+        return ReportText("清理预览明细", "Cleanup preview")
     }
 }
 
@@ -120,8 +126,11 @@ private struct ScanHero: View {
                         Button(model.applying ? tr("停止清理", "Stop cleanup") : tr("取消扫描", "Cancel scan"), action: model.cancel)
                             .buttonStyle(ActionStyle())
 
-                    } else if model.report != nil {
-                        Button(action: review) { Label(tr("查看明细", "Review results"), systemImage: "list.bullet.rectangle") }
+                    } else if let report = model.report {
+                        Button(action: review) {
+                            Label(report.canApplyClean ? tr("审阅清理", "Review cleanup") : tr("查看明细", "Review results"),
+                                  systemImage: "list.bullet.rectangle")
+                        }
                             .buttonStyle(ActionStyle(isPrimary: true))
                         Button(action: model.start) { Image(systemName: "arrow.clockwise") }
                             .buttonStyle(ActionStyle()).help(tr("重新扫描", "Scan again")).accessibilityLabel(tr("重新扫描", "Scan again"))

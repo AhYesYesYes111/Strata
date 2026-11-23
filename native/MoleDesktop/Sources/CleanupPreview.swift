@@ -62,6 +62,8 @@ struct CleanupReport {
     let transcript: String
     let notice: ReportText?
     var detailNotice: String? { notice?.value }
+    var previewSize: String?
+    var previewItemCount: Int?
     var plan: CleanupPlan?
     var canApplyClean: Bool { plan != nil && !logClipped }
     var logClipped = false
@@ -383,6 +385,7 @@ enum CleanupPreview {
                 final.contains(stats) && final.contains("Detailed file list: \(url.path)")
             return CleanupReport(summaryText: summary, groups: groups, transcript: transcript,
                                  notice: groups.isEmpty || verifiedDigest == nil ? missing : notice,
+                                 previewSize: size, previewItemCount: items,
                                  plan: verified ? verifiedDigest.map { CleanupPlan(ledgerDigest: $0, operationRows: operationRows(lines)) } : nil)
         }
     }
