@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import IOKit.ps
+import QuartzCore
 import SwiftUI
 import SystemConfiguration
 
@@ -92,12 +93,18 @@ struct ResourceTrend {
         if samples.count > 32 { samples.removeFirst(samples.count - 32) }
     }
 
-    struct Point: Identifiable {
+    struct Point: Identifiable, Equatable {
         let date: Date
         let offset: Double
         let percent: Double
         let segment: Int
         var id: Date { date }
+
+        func position(in size: CGSize, targetBound: Double, displayedBound: Double) -> CGPoint {
+            let fraction = percent / 100 * targetBound / displayedBound
+            return CGPoint(x: (1 + offset / ResourceTrend.duration) * (size.width - 2) + 1,
+                           y: (1 - fraction) * (size.height - 3) + 1.5)
+        }
     }
 
     var playbackInterval: TimeInterval? {
@@ -361,56 +368,183 @@ struct MetricTrace: View {
 
     var body: some View {
         let end = sampleTime?.timeIntervalSinceReferenceDate
-        let canvas = TraceCanvas(points: points, color: color, baseline: baseline, sampleEnd: end,
-                                 windowEnd: end ?? 0, targetBound: upperBound, displayedBound: upperBound)
-        if !reduceMotion, phase == .active, let interval {
-            canvas.animation(.linear(duration: interval), value: end)
+        if let end {
+            let duration = !reduceMotion && phase == .active ? interval : nil
+            ScrollingTrace(points: points, color: color, baseline: baseline, sampleEnd: end,
+                           targetBound: upperBound, displayedBound: upperBound, interval: duration)
+                .animation(duration.map { .linear(duration: $0) }, value: end)
+                .accessibilityHidden(true)
         } else {
-            canvas
+            // The menu shows each sample immediately, without a scrolling time window.
+            Canvas { context, size in
+                let paths = TracePaths(points: points, size: size, targetBound: upperBound, displayedBound: upperBound)
+                context.clip(to: Path(CGRect(origin: .zero, size: size)))
+                context.fill(Path(paths.marks), with: .color(color))
+                if baseline {
+                    context.fill(Path(CGRect(x: 0, y: size.height - 1, width: size.width, height: 1)),
+                                 with: .color(color.opacity(0.18)))
+                }
+                context.stroke(Path(paths.line), with: .color(color),
+                               style: StrokeStyle(lineWidth: 1.65, lineCap: .round, lineJoin: .round))
+            }.accessibilityHidden(true)
         }
     }
 }
 
-struct TraceCanvas: View, Animatable {
+private struct TracePaths {
+    let line = CGMutablePath()
+    let marks = CGMutablePath()
+
+    init(points: [ResourceTrend.Point], size: CGSize, targetBound: Double, displayedBound: Double) {
+        var segment: Int?
+        for point in points {
+            let p = point.position(in: size, targetBound: targetBound, displayedBound: displayedBound)
+            if segment == point.segment {
+                line.addLine(to: p)
+            } else {
+                line.move(to: p)
+                marks.addEllipse(in: CGRect(x: p.x - 1, y: p.y - 1, width: 2, height: 2))
+            }
+            segment = point.segment
+        }
+    }
+}
+
+private struct ScrollingTrace: View, Animatable {
     let points: [ResourceTrend.Point]
     let color: Color
     let baseline: Bool
-    let sampleEnd: TimeInterval?
-    var windowEnd: TimeInterval
+    let sampleEnd: TimeInterval
     let targetBound: Double
     var displayedBound: Double
+    let interval: TimeInterval?
 
-    var animatableData: AnimatablePair<Double, Double> {
-        get { AnimatablePair(windowEnd, displayedBound) }
-        set { windowEnd = newValue.first; displayedBound = newValue.second }
+    // Only a change of vertical scale needs new geometry between samples.
+    var animatableData: Double {
+        get { displayedBound }
+        set { displayedBound = newValue }
     }
 
-    func position(of point: ResourceTrend.Point, in size: CGSize) -> CGPoint {
-        let lag = (sampleEnd ?? windowEnd) - windowEnd
-        let fraction = point.percent / 100 * targetBound / displayedBound
-        return CGPoint(x: (1 + (point.offset + lag) / ResourceTrend.duration) * (size.width - 2) + 1,
-                       y: (1 - fraction) * (size.height - 3) + 1.5)
+    var body: some View { Host(trace: self) }
+
+    private struct Host: NSViewRepresentable {
+        let trace: ScrollingTrace
+
+        func makeNSView(context: Context) -> TraceLayerView { TraceLayerView() }
+        func updateNSView(_ view: TraceLayerView, context: Context) {
+            view.update(points: trace.points, color: NSColor(trace.color), baseline: trace.baseline,
+                        sampleEnd: trace.sampleEnd, displayedBound: trace.displayedBound,
+                        targetBound: trace.targetBound, interval: trace.interval)
+        }
+    }
+}
+
+final class TraceLayerView: NSView {
+    override var isFlipped: Bool { true }
+    let moving = CALayer()
+    let stroke = CAShapeLayer()
+    let dots = CAShapeLayer()
+    let baselineLayer = CALayer()
+    private var points: [ResourceTrend.Point] = []
+    private var sampleEnd: TimeInterval?
+    private var displayedBound = 1.0
+    private var targetBound = 1.0
+    private var drawnSize = CGSize.zero
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.addSublayer(baselineLayer)
+        layer?.addSublayer(moving)
+        moving.addSublayer(dots)
+        moving.addSublayer(stroke)
+        stroke.fillColor = nil
+        stroke.lineWidth = 1.65
+        stroke.lineCap = .round
+        stroke.lineJoin = .round
     }
 
-    var body: some View {
-        Canvas { context, size in
-            context.clip(to: Path(CGRect(origin: .zero, size: size)))
-            var path = Path()
-            var segment: Int?
-            for point in points {
-                let p = position(of: point, in: size)
-                if segment == point.segment { path.addLine(to: p) }
-                else {
-                    path.move(to: p)
-                    context.fill(Path(ellipseIn: CGRect(x: p.x - 1, y: p.y - 1, width: 2, height: 2)), with: .color(color))
-                }
-                segment = point.segment
+    required init?(coder: NSCoder) { return nil }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        guard let scale = window?.backingScaleFactor else { return }
+        stroke.contentsScale = scale
+        dots.contentsScale = scale
+    }
+
+    func update(points: [ResourceTrend.Point], color: NSColor, baseline: Bool, sampleEnd: TimeInterval?,
+                displayedBound: Double, targetBound: Double, interval: TimeInterval?) {
+        let previousEnd = self.sampleEnd
+        let scale = interval == nil ? targetBound : displayedBound
+        let needsPath = self.points != points || self.displayedBound != scale || self.targetBound != targetBound
+        self.points = points
+        self.sampleEnd = sampleEnd
+        self.displayedBound = scale
+        self.targetBound = targetBound
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        stroke.strokeColor = color.cgColor
+        dots.fillColor = color.cgColor
+        baselineLayer.backgroundColor = baseline ? color.withAlphaComponent(color.alphaComponent * 0.18).cgColor : nil
+        if needsPath || drawnSize != bounds.size { drawPaths() }
+
+        guard let interval, interval > 0, interval <= ResourceTrend.longestInterval,
+              let sampleEnd, let previousEnd, bounds.width > 2 else {
+            moving.removeAnimation(forKey: "scroll")
+            return
+        }
+        guard sampleEnd != previousEnd else { return }
+        let step = sampleEnd - previousEnd
+        guard step > 0, step <= ResourceTrend.longestInterval else {
+            moving.removeAnimation(forKey: "scroll")
+            return
+        }
+        // A sample can arrive before the previous slide has finished.
+        let remaining = moving.presentation()?.affineTransform().tx ?? 0
+        let scroll = CABasicAnimation(keyPath: "transform.translation.x")
+        scroll.fromValue = remaining + step * (bounds.width - 2) / ResourceTrend.duration
+        scroll.toValue = 0
+        scroll.beginTime = moving.convertTime(CACurrentMediaTime(), from: nil)
+        scroll.duration = interval
+        scroll.timingFunction = CAMediaTimingFunction(name: .linear)
+        moving.add(scroll, forKey: "scroll")
+    }
+
+    override func layout() {
+        super.layout()
+        guard drawnSize != bounds.size else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        drawPaths()
+        CATransaction.commit()
+    }
+
+    private func drawPaths() {
+        let size = bounds.size
+        // Keep the same time offset and finish time when the user resizes mid-slide.
+        if size.width != drawnSize.width,
+           let scroll = moving.animation(forKey: "scroll")?.copy() as? CABasicAnimation,
+           let start = scroll.fromValue as? CGFloat {
+            if drawnSize.width > 2 && size.width > 2 {
+                scroll.fromValue = start * (size.width - 2) / (drawnSize.width - 2)
+                moving.add(scroll, forKey: "scroll")
+            } else {
+                moving.removeAnimation(forKey: "scroll")
             }
-            if baseline {
-                context.fill(Path(CGRect(x: 0, y: size.height - 1, width: size.width, height: 1)), with: .color(color.opacity(0.18)))
-            }
-            context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.65, lineCap: .round, lineJoin: .round))
-        }.accessibilityHidden(true)
+        }
+        drawnSize = size
+        moving.frame = bounds
+        stroke.frame = moving.bounds
+        dots.frame = moving.bounds
+        baselineLayer.frame = CGRect(x: 0, y: size.height - 1, width: size.width, height: 1)
+        let paths = TracePaths(points: points, size: size, targetBound: targetBound, displayedBound: displayedBound)
+        stroke.path = paths.line
+        dots.path = paths.marks
     }
 }
 

@@ -1,5 +1,7 @@
+import AppKit
 import Combine
 import Foundation
+import QuartzCore
 import SwiftUI
 
 @main
@@ -57,29 +59,70 @@ enum MonitorSessionTests {
             ResourceSample(date: Date(timeIntervalSinceReferenceDate: Double(second)), cpu: value,
                            memory: nil, down: value, interface: link)
         }
-        for second in stride(from: 0, through: 62, by: 2) {
+        for second in stride(from: 0, through: 60, by: 2) {
             history.append(sample(second, second == 0 ? 100 : 20))
         }
+        let size = CGSize(width: 602, height: 103)
+        let view = TraceLayerView(frame: CGRect(origin: .zero, size: size))
+        view.update(points: history.points(for: \.down, upperBound: 100, sameLink: true, includeLeading: true),
+                    color: .red, baseline: true, sampleEnd: 60, displayedBound: 100, targetBound: 100, interval: 2)
+        precondition(view.moving.animation(forKey: "scroll") == nil, "First sample must appear immediately")
+
+        history.append(sample(62, 20))
         precondition(history.playbackInterval == 2 && history.samples.first?.date.timeIntervalSinceReferenceDate == 2)
         let points = history.points(for: \.down, upperBound: 20, sameLink: true, includeLeading: true)
-        let size = CGSize(width: 602, height: 103)
-        var canvas = TraceCanvas(points: points, color: .white, baseline: false, sampleEnd: 62,
-                                 windowEnd: 60, targetBound: 20, displayedBound: 100)
         let oldest = points.first!, newest = points.last!
         precondition(oldest.date.timeIntervalSinceReferenceDate == 0)
-        precondition(abs(canvas.position(of: oldest, in: size).y - 1.5) < 0.001)
-        let start = canvas.position(of: newest, in: size)
-        canvas.animatableData = AnimatablePair(61, 60)
-        let middle = canvas.position(of: newest, in: size)
-        canvas.animatableData = AnimatablePair(62, 20)
-        let end = canvas.position(of: newest, in: size)
-        precondition(abs(middle.x - (start.x + end.x) / 2) < 0.001 && start.x > middle.x && middle.x > end.x)
-        precondition(start.y > middle.y && middle.y > end.y)
+        view.update(points: points, color: .red, baseline: true, sampleEnd: 62,
+                    displayedBound: 100, targetBound: 20, interval: 2)
+        guard let scroll = view.moving.animation(forKey: "scroll") as? CABasicAnimation else {
+            preconditionFailure("A new sample must schedule compositor scrolling")
+        }
+        precondition(scroll.keyPath == "transform.translation.x" && scroll.duration == 2)
+        // A 600pt plotting area covers 60s. The new geometry starts 20pt to the right.
+        precondition((scroll.fromValue as? NSNumber)?.doubleValue == 20 && (scroll.toValue as? NSNumber)?.doubleValue == 0)
+        precondition(view.layer?.masksToBounds == true && view.stroke.superlayer === view.moving)
+        precondition(view.dots.superlayer === view.moving && view.baselineLayer.superlayer === view.layer)
+        precondition(!view.baselineLayer.isHidden && (view.baselineLayer.backgroundColor?.alpha ?? 0) > 0)
+        let leading = oldest.position(in: size, targetBound: 20, displayedBound: 100)
+        precondition(abs(leading.x + 19) < 0.001 && abs(leading.y - 1.5) < 0.001)
+        precondition(abs(view.dots.path!.boundingBoxOfPath.midX - leading.x) < 0.001)
+
+        // The scale interpolates linearly; the height varies inversely with that scale.
+        for bound in [100.0, 60.0] {
+            view.update(points: points, color: .blue, baseline: true, sampleEnd: 62,
+                        displayedBound: bound, targetBound: 20, interval: 2)
+            let p = view.stroke.path!.currentPoint
+            precondition(abs(p.x - 601) < 0.001 && abs(p.y - ((1 - 20 / bound) * 100 + 1.5)) < 0.001)
+        }
+        precondition(view.stroke.strokeColor == NSColor.blue.cgColor)
+        let smaller = CGSize(width: 302, height: 103)
+        view.setFrameSize(smaller)
+        view.layoutSubtreeIfNeeded()
+        precondition(abs(view.stroke.path!.currentPoint.x - 301) < 0.001, "Resize must rebuild the path even without a new sample")
+        let resized = view.moving.animation(forKey: "scroll") as? CABasicAnimation
+        precondition((resized?.fromValue as? NSNumber)?.doubleValue == 10 && resized?.beginTime == scroll.beginTime,
+                     "Resizing during playback must preserve the time offset and finish time")
+        view.update(points: points, color: .blue, baseline: true, sampleEnd: 62,
+                    displayedBound: 60, targetBound: 20, interval: nil)
+        precondition(view.moving.animation(forKey: "scroll") == nil, "Disabling motion must stop in-flight scrolling")
+        precondition(view.stroke.path!.currentPoint == newest.position(in: smaller, targetBound: 20, displayedBound: 20),
+                     "Disabling motion mid-rescale must immediately show the final vertical scale")
+
         history.append(sample(64, nil))
         history.append(sample(66, 10))
+        history.append(sample(68, 15))
         let broken = history.points(for: \.down, upperBound: 20, sameLink: true, includeLeading: true)
-        precondition(broken.last!.segment != broken.dropLast().last!.segment)
-        history.append(sample(68, 15, link: "en1"))
+        precondition(broken.first!.segment != broken.last!.segment)
+        view.update(points: broken, color: .blue, baseline: false, sampleEnd: 68,
+                    displayedBound: 20, targetBound: 20, interval: 2)
+        var starts = 0
+        view.stroke.path!.applyWithBlock { element in
+            if element.pointee.type == .moveToPoint { starts += 1 }
+        }
+        precondition(starts == 2, "A missing reading must leave a break in the actual stroke")
+        precondition(view.baselineLayer.isHidden || (view.baselineLayer.backgroundColor?.alpha ?? 0) == 0)
+        history.append(sample(70, 15, link: "en1"))
         precondition(history.points(for: \.down, sameLink: true, includeLeading: true).count == 1)
         history.append(sample(80, 12))
         precondition(history.playbackInterval == nil)
