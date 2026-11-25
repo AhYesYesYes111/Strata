@@ -1,0 +1,87 @@
+name: Mole CLI platforms
+
+on:
+  push:
+    paths:
+      - 'components/Mole/**'
+      - '.github/workflows/mole-platforms.yml'
+  pull_request:
+    paths:
+      - 'components/Mole/**'
+      - '.github/workflows/mole-platforms.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Mole CLI (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            runner: macos-26
+          - platform: linux
+            runner: ubuntu-24.04
+          - platform: windows
+            runner: windows-latest
+    defaults:
+      run:
+        working-directory: components/Mole/${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: components/Mole/${{ matrix.platform }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: components/Mole/${{ matrix.platform }}/go.mod
+          cache-dependency-path: components/Mole/${{ matrix.platform }}/go.sum
+      - name: Build Unix CLI helpers
+        if: runner.os != 'Windows'
+        run: make build
+      - name: Build Windows CLI helpers and launcher
+        if: runner.os == 'Windows'
+        run: |
+          go build -o ./bin/ ./cmd/analyze ./cmd/status
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -o ./mo.exe ./cmd/mo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./mo.exe --help
+      - name: Run Go tests
+        run: go test ./...
+      - name: Run macOS CLI tests
+        if: runner.os == 'macOS'
+        env:
+          MOLE_TEST_NO_AUTH: '1'
+          MOLE_TEST_ANALYZE_BIN: ${{ github.workspace }}/components/Mole/macos/bin/analyze-go
+          MOLE_TEST_STATUS_BIN: ${{ github.workspace }}/components/Mole/macos/bin/status-go
+          LANG: en_US.UTF-8
+        run: |
+          brew install bats-core coreutils
+          bats tests/core_common.bats tests/core_timeout.bats tests/cli.bats
+      - name: Run Linux CLI tests
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats
+          bats tests/delete.bats tests/history.bats tests/snapshots.bats
+      - name: Run Windows PowerShell tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck -ErrorAction Stop
+          ./scripts/test.ps1 -NoGo
+      - name: Run Windows harness and review checks
+        if: runner.os == 'Windows'
+        env:
+          MOLE_TEST_NO_AUTH: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python tests/e2e_harness_test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/review_gates_test.py

@@ -8,7 +8,7 @@ Strata is a native macOS app that shows where your disk space goes, lets you rev
 
 ## Build Strata
 
-Strata runs on **macOS 13 or later**. Building from source requires **Python 3** and **Apple developer tools with the macOS 26 SDK or newer**.
+Strata runs on **macOS 13 or later**. Building from source requires **Python 3** and **a full Xcode installation with the macOS 26 SDK or newer**.
 
 ```sh
 git clone https://github.com/AhYesYesYes111/Strata.git
@@ -17,7 +17,7 @@ python3 native/MoleDesktop/build.py
 open native/MoleDesktop/build/Strata.app
 ```
 
-If you already have this checkout, run the last two commands from its root. The script builds and locally signs the app for the current Mac’s architecture. It also saves an archive at `native/MoleDesktop/build/Strata.zip`.
+The default build compiles FineTune from this repository, embeds it in the locally signed app, and writes `native/MoleDesktop/build/Strata.zip`. Audio controls require macOS 15.4 or later. Xcode resolves the pinned Swift packages on the first build. Pass `--without-finetune` for a disk-tools-only build.
 
 ## Using Strata
 
@@ -35,7 +35,9 @@ If you need to measure folders protected by macOS, **Access** opens Full Disk Ac
 
 ## About the upstream Mole CLI
 
-Strata bundles cleanup and maintenance scripts from Mole CLI, the terminal tool by tw93 and contributors. The upstream project also publishes its own desktop app, Mole Mac. [Mole CLI source](https://github.com/tw93/Mole) · [Mole Mac](https://mole.fit/)
+The repository includes the complete FineTune Xcode project and the macOS, Linux, and Windows editions of Mole with their tests and packaging scripts. Run `./mo --help` on macOS or Linux. The Windows entry point is `components/Mole/windows/mole.ps1`. Build instructions for each platform are in the [component guide](components/README.md).
+
+The desktop app bundles cleanup and maintenance scripts from Mole CLI, the terminal tool by tw93 and contributors. The upstream project also publishes its own desktop app, Mole Mac. [Mole CLI source](https://github.com/tw93/Mole) · [Mole Mac](https://mole.fit/)
 
 ## License
 

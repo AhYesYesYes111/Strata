@@ -1,0 +1,57 @@
+#!/bin/sh
+# Recorder for the isolated test app. No system commands or cleanup operations.
+set -eu
+fixture=${0%/*}
+IFS= read -r expected_home < "$fixture/expected-home"
+[ "$HOME" -ef "$expected_home" ] || exit 70
+cd "$expected_home"
+IFS= read -r mode < mode
+ledger="$HOME/.config/mole/clean-list.txt"
+[ -z "${MOLE_TEST_MODE+x}${MOLE_TEST_TRASH_DIR+x}${MOLE_SKIP_MAIN+x}${BASH_ENV+x}" ] || exit 71
+[ "${_MOLE_STRATA_GUI:-}" = 1 ] || exit 77
+if IFS= read -r input; then exit 72; fi
+
+if [ "$#" = 2 ]; then
+    [ "$2" = "--dry-run" ] && [ "$MOLE_DRY_RUN" = 1 ] || exit 73
+    printf '%s preview\n' "$1" >> calls
+    case "$1" in
+        optimize)
+            [ "$MOLE_TEST_NO_AUTH" = 1 ] || exit 73
+            printf '===\nDry Run Complete, No Changes Made\nWould apply 3 optimizations\n===\n'
+            if [ "$mode" = partial ]; then exit 1; fi
+            ;;
+        clean)
+            [ -z "${MOLE_TEST_NO_AUTH+x}" ] || exit 73
+            size=8MB
+            digest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+            if [ "$mode" = changed ] || [ "$mode" = owner ]; then digest=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; fi
+            if [ "$mode" != missing ]; then
+                ledger_size=$size
+                if [ "$mode" = mismatch ]; then ledger_size=5KB; fi
+                candidate="example.fixture"
+                if [ "$mode" = changed ] || [ "$mode" = owner ]; then candidate="updated.fixture"; fi
+                printf '# Mole Cleanup Preview - fixture\n=== User caches ===\n%s  # 8MB\n# Potential cleanup: %s\n# Items: 1\n# Candidate digest: %s\n' \
+                    "$HOME/$candidate" "$ledger_size" "$digest" > "$ledger"
+            fi
+            printf '➤ Developer tools\n  ○ Homebrew cleanup · would free 9MB\n'
+            if [ "$mode" = owner ]; then
+                printf '    libfixture 3.0 · 9MB\n'
+            else
+                printf '    libfixture 2.0 · 9MB\n'
+            fi
+            if [ "$mode" = stale ]; then digest=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc; fi
+            printf '==========\nDry run complete - no changes made\nPotential space: %s · 1 items\nCandidate digest: %s\nDetailed file list: %s\n==========\n' "$size" "$digest" "$ledger"
+            ;;
+        *) exit 74 ;;
+    esac
+    exit 0
+fi
+
+[ "$#" = 1 ] && [ "$1" = clean ] || exit 75
+[ -z "${MOLE_TEST_NO_AUTH+x}${MOLE_DRY_RUN+x}" ] || exit 76
+printf 'clean apply\n' >> calls
+if [ "$mode" = slow ]; then
+    printf '%s\n' "$$" > waiting-pid
+    exec /bin/sleep 30
+fi
+printf '==========\nCleanup complete\nRemoved: 8MB · 1 item\n==========\n'

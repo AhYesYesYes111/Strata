@@ -1,0 +1,42 @@
+name: Strata desktop
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 35
+    env:
+      MOLE_TEST_NO_AUTH: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test the desktop app
+        run: |
+          python3 native/MoleDesktop/Tests/test_cleanup.py
+          python3 native/MoleDesktop/Tests/test_monitoring.py
+      - name: Test cleanup protections
+        run: |
+          brew install bats-core coreutils
+          bats tests/strata_cleanup_privacy.bats
+      - name: Test FineTune mixer and device visibility
+        run: |
+          xcodebuild test -project components/FineTune/FineTune.xcodeproj -scheme FineTune \
+            -destination 'platform=macOS,arch=arm64' -parallel-testing-enabled NO \
+            -onlyUsePackageVersionsFromResolvedFile -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
+            -only-testing:FineTuneTests/MenuDeviceVisibilityTests \
+            -only-testing:FineTuneTests/StrataMixerSocketTests \
+            -resultBundlePath "$RUNNER_TEMP/Bridge.xcresult" CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=
+          xcrun xcresulttool get test-results tests --path "$RUNNER_TEMP/Bridge.xcresult" | jq -e '
+            [.. | objects | select(.nodeType == "Test Case" and .result == "Passed") | .nodeIdentifier] |
+            any(startswith("MenuDeviceVisibilityTests/")) and any(startswith("StrataMixerSocketTests/"))'
+      - name: Build and verify the combined app
+        run: |
+          python3 native/MoleDesktop/build.py --finetune-packages "$RUNNER_TEMP/SourcePackages"
+          python3 components/FineTune/scripts/build-strata-companion.py --verify-only \
+            native/MoleDesktop/build/Strata.app/Contents/Helpers/FineTune.app
+          codesign --verify --deep --strict native/MoleDesktop/build/Strata.app

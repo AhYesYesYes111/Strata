@@ -1,0 +1,360 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+func TestCountSnapshotsInCountsOnlyDirectories(t *testing.T) {
+	root := t.TempDir()
+	snapper := filepath.Join(root, ".snapshots")
+	timeshift := filepath.Join(root, "timeshift", "snapshots")
+	for _, dir := range []string{
+		filepath.Join(snapper, "1", "snapshot"),
+		filepath.Join(snapper, "2", "snapshot"),
+		filepath.Join(timeshift, "2026-08-26_09-15-00"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(snapper, "stray.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := countSnapshotsIn(context.Background(), []string{snapper, timeshift, filepath.Join(root, "absent")})
+	if err != nil || got != 3 {
+		t.Fatalf("countSnapshotsIn = %d, %v; want 3, nil", got, err)
+	}
+}
+
+func TestCountSnapshotsInReportsNothingForMissingStores(t *testing.T) {
+	got, err := countSnapshotsIn(context.Background(), []string{filepath.Join(t.TempDir(), "absent")})
+	if err != nil || got != 0 {
+		t.Fatalf("countSnapshotsIn = %d, %v; want 0, nil", got, err)
+	}
+}
+
+func TestCountSnapshotsInStopsWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := countSnapshotsIn(ctx, []string{t.TempDir()}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestLocalSnapshotProbeHasBoundedBudget(t *testing.T) {
+	counter := func(ctx context.Context) (int, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > localSnapshotProbeTimeout {
+			t.Fatalf("snapshot probe context deadline = %v, want a live %s budget", deadline, localSnapshotProbeTimeout)
+		}
+		return 2, nil
+	}
+	msg := localSnapshotProbeCmd(counter, 0)().(localSnapshotMsg)
+	if msg.err != nil || msg.count != 2 {
+		t.Fatalf("snapshot probe result = %#v, want count 2", msg)
+	}
+}
+
+func TestLocalSnapshotProbeReportsFailure(t *testing.T) {
+	wantErr := errors.New("snapshot store unreadable")
+	msg := localSnapshotProbeCmd(func(context.Context) (int, error) { return 0, wantErr }, 0)().(localSnapshotMsg)
+	if !errors.Is(msg.err, wantErr) || msg.count != 0 {
+		t.Fatalf("snapshot probe result = %#v, want error", msg)
+	}
+}
+
+func TestOverviewStoresSuccessfulLocalSnapshotCount(t *testing.T) {
+	m := model{path: "/", isOverview: true}
+	updated, cmd := m.Update(localSnapshotMsg{count: 3})
+	if cmd != nil {
+		t.Fatalf("snapshot update command = %v, want nil", cmd)
+	}
+	got := updated.(model)
+	if got.localSnapshotCount != 3 {
+		t.Fatalf("snapshot count = %d, want 3", got.localSnapshotCount)
+	}
+	if !got.localSnapshotFresh {
+		t.Fatal("successful snapshot probe was not marked fresh")
+	}
+
+	updated, _ = got.Update(localSnapshotMsg{count: 9, err: errors.New("bad output")})
+	failed := updated.(model)
+	if failed.localSnapshotCount != 3 {
+		t.Fatalf("failed refresh changed snapshot count to %d, want 3", failed.localSnapshotCount)
+	}
+	if failed.localSnapshotFresh {
+		t.Fatal("failed refresh left the previous snapshot count marked fresh")
+	}
+}
+
+func TestOverviewRefreshReprobesLocalSnapshots(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	m := newModel("/", true)
+	m.snapshotRunner = func(context.Context) (int, error) {
+		return 0, nil
+	}
+	m.localSnapshotCount = 4
+	firstUpdated, firstCmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	first := firstUpdated.(model)
+	firstMsg := localSnapshotMsgFromBatch(t, firstCmd)
+
+	secondUpdated, secondCmd := first.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	second := secondUpdated.(model)
+	secondMsg := localSnapshotMsgFromBatch(t, secondCmd)
+	if firstMsg.probeID == secondMsg.probeID {
+		t.Fatalf("consecutive refreshes reused snapshot probe ID %d", firstMsg.probeID)
+	}
+
+	staleUpdated, _ := second.Update(firstMsg)
+	stale := staleUpdated.(model)
+	if stale.localSnapshotCount != 4 {
+		t.Fatalf("stale probe changed snapshot count to %d, want 4", stale.localSnapshotCount)
+	}
+
+	currentUpdated, _ := stale.Update(secondMsg)
+	if got := currentUpdated.(model).localSnapshotCount; got != 0 {
+		t.Fatalf("current successful zero-count refresh left snapshot count at %d", got)
+	}
+}
+
+func TestOverviewRefreshResultSurvivesDrillDown(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	m := newModel("/", true)
+	m.snapshotRunner = func(context.Context) (int, error) {
+		return 0, nil
+	}
+	m.localSnapshotCount = 4
+	refreshedModel, refreshCmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	refreshed := refreshedModel.(model)
+	refreshMsg := localSnapshotMsgFromBatch(t, refreshCmd)
+
+	refreshed.entries = []dirEntry{{Name: "child", Path: t.TempDir(), Size: 1, IsDir: true}}
+	drilledModel, _ := refreshed.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	drilled := drilledModel.(model)
+	if drilled.inOverviewMode() {
+		t.Fatal("enter key left model in overview mode")
+	}
+
+	updatedModel, _ := drilled.Update(refreshMsg)
+	backModel, _ := updatedModel.(model).Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if got := backModel.(model).localSnapshotCount; got != 0 {
+		t.Fatalf("refresh completed during drill-down left snapshot count at %d", got)
+	}
+}
+
+func TestEnteringOverviewProbesLocalSnapshots(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	m := newModel(t.TempDir(), false)
+	m.snapshotRunner = func(context.Context) (int, error) {
+		return 1, nil
+	}
+
+	overviewModel, overviewCmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	overview := overviewModel.(model)
+	if !overview.inOverviewMode() {
+		t.Fatal("escape key did not enter overview mode")
+	}
+
+	msg := localSnapshotMsgFromBatch(t, overviewCmd)
+	updatedModel, _ := overview.Update(msg)
+	if got := updatedModel.(model).localSnapshotCount; got != 1 {
+		t.Fatalf("entering overview stored snapshot count %d, want 1", got)
+	}
+}
+
+func TestSwitchingToOverviewAdvancesSnapshotProbeGeneration(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	m := newModel(t.TempDir(), false)
+	m.snapshotRunner = func(context.Context) (int, error) {
+		return 1, nil
+	}
+	firstMsg := localSnapshotMsgFromBatch(t, m.switchToOverviewMode())
+	m.isOverview = false
+	m.path = t.TempDir()
+	secondMsg := localSnapshotMsgFromBatch(t, m.switchToOverviewMode())
+
+	if firstMsg.probeID == secondMsg.probeID {
+		t.Fatalf("switching to overview reused snapshot probe ID %d", secondMsg.probeID)
+	}
+	staleModel, _ := m.Update(localSnapshotMsg{probeID: firstMsg.probeID, count: 9})
+	if got := staleModel.(model).localSnapshotCount; got != 0 {
+		t.Fatalf("older overview probe changed snapshot count to %d, want 0", got)
+	}
+	currentModel, _ := staleModel.(model).Update(localSnapshotMsg{probeID: secondMsg.probeID, count: 1})
+	if got := currentModel.(model).localSnapshotCount; got != 1 {
+		t.Fatalf("current overview probe stored snapshot count %d, want 1", got)
+	}
+}
+
+func localSnapshotMsgFromBatch(t *testing.T, cmd tea.Cmd) localSnapshotMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatalf("overview refresh command = nil, want a command batch")
+	}
+	msg := cmd()
+	if snapshotMsg, ok := msg.(localSnapshotMsg); ok {
+		return snapshotMsg
+	}
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("overview refresh command returned %T, want tea.BatchMsg", msg)
+	}
+	for _, batchCmd := range batch {
+		if batchCmd == nil {
+			continue
+		}
+		if msg, ok := batchCmd().(localSnapshotMsg); ok {
+			return msg
+		}
+	}
+	t.Fatalf("overview refresh batch did not re-probe local snapshots")
+	return localSnapshotMsg{}
+}
+
+func TestOverviewViewExplainsLocalSnapshotOnlySpace(t *testing.T) {
+	m := model{
+		path:               "/",
+		isOverview:         true,
+		localSnapshotCount: 2,
+		localSnapshotFresh: true,
+		entries:            []dirEntry{{Name: "Home", Path: "/tmp/home", Size: 1, IsDir: true}},
+	}
+
+	view := m.View()
+	for _, want := range []string{"2 local snapshots", "snapshot-only space is not listed below"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected overview snapshot notice %q, got:\n%s", want, view)
+		}
+	}
+}
+
+func TestOverviewViewUsesSingularSnapshotLabel(t *testing.T) {
+	m := model{
+		path:               "/",
+		isOverview:         true,
+		localSnapshotCount: 1,
+		localSnapshotFresh: true,
+		entries:            []dirEntry{{Name: "Home", Path: "/tmp/home", Size: 1, IsDir: true}},
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "1 local snapshot") || strings.Contains(view, "1 local snapshots") {
+		t.Fatalf("expected singular snapshot notice, got:\n%s", view)
+	}
+}
+
+func TestOverviewViewMarksSnapshotCountStaleAfterProbeFailure(t *testing.T) {
+	m := model{
+		path:               "/",
+		isOverview:         true,
+		localSnapshotCount: 2,
+		localSnapshotFresh: false,
+		entries:            []dirEntry{{Name: "Home", Path: "/tmp/home", Size: 1, IsDir: true}},
+	}
+
+	if view := m.View(); !strings.Contains(view, "last successful check") {
+		t.Fatalf("expected stale snapshot notice, got:\n%s", view)
+	}
+}
+
+func TestOverviewViewOmitsSnapshotNoticeWhenNoneDetected(t *testing.T) {
+	m := model{
+		path:       "/",
+		isOverview: true,
+		entries:    []dirEntry{{Name: "Home", Path: "/tmp/home", Size: 1, IsDir: true}},
+	}
+
+	if view := m.View(); strings.Contains(view, "local snapshot") {
+		t.Fatalf("expected no snapshot notice, got:\n%s", view)
+	}
+}
+
+func TestCountSnapshotsInReportsAStoreItCannotList(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 directory")
+	}
+	store := filepath.Join(t.TempDir(), ".snapshots")
+	if err := os.MkdirAll(filepath.Join(store, "1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(store, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(store, 0o755) })
+
+	got, err := countSnapshotsIn(context.Background(), []string{store, filepath.Join(t.TempDir(), "absent")})
+	if !errors.Is(err, errSnapshotsUnreadable) || got != 0 {
+		t.Fatalf("countSnapshotsIn = %d, %v; want 0, errSnapshotsUnreadable", got, err)
+	}
+}
+
+func TestCountSnapshotsInKeepsTheCountBesideAnUnreadableStore(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 directory")
+	}
+	root := t.TempDir()
+	hidden := filepath.Join(root, ".snapshots")
+	readable := filepath.Join(root, "timeshift", "snapshots")
+	for _, dir := range []string{hidden, filepath.Join(readable, "2026-08-26_09-15-00")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(hidden, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(hidden, 0o755) })
+
+	got, err := countSnapshotsIn(context.Background(), []string{hidden, readable})
+	if err != nil || got != 1 {
+		t.Fatalf("countSnapshotsIn = %d, %v; want 1, nil", got, err)
+	}
+}
+
+func TestOverviewShowsSnapshotsItCannotCount(t *testing.T) {
+	m := model{path: "/", isOverview: true, localSnapshotCount: 2,
+		entries: []dirEntry{{Name: "Home", Path: "/tmp/home", Size: 1, IsDir: true}}}
+	updated, _ := m.Update(localSnapshotMsg{err: errSnapshotsUnreadable})
+	got := updated.(model)
+	if !got.localSnapshotsHidden || got.localSnapshotCount != 0 || !got.localSnapshotFresh {
+		t.Fatalf("unreadable store left model %+v", got)
+	}
+	view := got.View()
+	if !strings.Contains(view, "Local snapshots exist · snapshot-only space is not listed below") {
+		t.Fatalf("expected unreadable snapshot notice, got:\n%s", view)
+	}
+	if strings.Contains(view, "0 local") || strings.Contains(view, "last successful check") {
+		t.Fatalf("unreadable snapshot notice carries a count, got:\n%s", view)
+	}
+
+	updated, _ = got.Update(localSnapshotMsg{count: 3})
+	counted := updated.(model)
+	if counted.localSnapshotsHidden {
+		t.Fatal("a readable count left the unreadable notice on")
+	}
+	if view := counted.View(); !strings.Contains(view, "3 local snapshots") || strings.Contains(view, "Local snapshots exist") {
+		t.Fatalf("expected the counted notice only, got:\n%s", view)
+	}
+}
+
+func TestOverviewKeepsSilentWhenTheProbeFailsOtherwise(t *testing.T) {
+	m := model{path: "/", isOverview: true,
+		entries: []dirEntry{{Name: "Home", Path: "/tmp/home", Size: 1, IsDir: true}}}
+	updated, _ := m.Update(localSnapshotMsg{err: errors.New("io error")})
+	if view := updated.(model).View(); strings.Contains(view, "napshot") {
+		t.Fatalf("expected no snapshot notice, got:\n%s", view)
+	}
+}

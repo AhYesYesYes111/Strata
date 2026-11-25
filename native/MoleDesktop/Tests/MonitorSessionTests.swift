@@ -25,7 +25,8 @@ enum MonitorSessionTests {
         let processSubscription = monitor.$processes.dropFirst().sink { _ in processUpdates += 1 }
 
         monitor.startMenu()
-        try await wait { monitor.readings.trend.samples.count >= 2 && monitor.didSampleProcesses }
+        try await wait { monitor.readings.trend.samples.count >= 2 }
+        precondition(processUpdates == 0 && !monitor.didSampleProcesses, "The menu only needs hardware readings")
         let samples = monitor.readings.trend.samples.count
         let initialUpdates = statusUpdates
         monitor.startMenu()
@@ -34,8 +35,15 @@ enum MonitorSessionTests {
         monitor.stopMenu()
         monitor.stopMenu()
         precondition(statusUpdates == initialUpdates, "Adding another surface must reuse the running sampler")
-        try await wait { monitor.readings.trend.samples.count > samples }
+        try await wait { monitor.readings.trend.samples.count > samples && monitor.didSampleProcesses }
+        monitor.startMenu()
         monitor.stopWindow(window)
+        let menuOnlyProcesses = processUpdates
+        let menuOnlyStatus = statusUpdates
+        try await Task.sleep(nanoseconds: 3_250_000_000)
+        precondition(menuOnlyProcesses == processUpdates && statusUpdates > menuOnlyStatus,
+                     "Closing the last status window stops process updates while the menu continues")
+        monitor.stopMenu()
         let stoppedStatus = statusUpdates
         let stoppedProcesses = processUpdates
         try await Task.sleep(nanoseconds: 3_250_000_000)

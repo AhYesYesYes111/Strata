@@ -38,20 +38,22 @@ final class MonitorSession: ObservableObject {
     func stopWindow(_ id: UUID) { hide(.window(id)) }
 
     private func show(_ surface: Surface) {
-        guard visible.insert(surface).inserted, visible.count == 1 else { return }
-
-        // Keep recent history, but always establish fresh rate baselines after a pause.
-        let history = readings.trend
-        readings = StatusReadings(history: history)
+        guard visible.insert(surface).inserted else { return }
+        if statusTask == nil {
+            // Keep recent history, but always establish fresh rate baselines after a pause.
+            let history = readings.trend
+            readings = StatusReadings(history: history)
+            let status = StatusSampler(history: history)
+            statusTask = poll(every: 2_000_000_000) { [weak self] in
+                let result = try await status.sample()
+                try Task.checkCancellation()
+                self?.readings = result
+            }
+        }
+        guard case .window = surface, processTask == nil else { return }
         processes = []
         didSampleProcesses = false
-        let status = StatusSampler(history: history)
         let process = ProcessSampler()
-        statusTask = poll(every: 2_000_000_000) { [weak self] in
-            let result = try await status.sample()
-            try Task.checkCancellation()
-            self?.readings = result
-        }
         processTask = poll(every: 3_000_000_000) { [weak self] in
             let result = try await process.sample()
             try Task.checkCancellation()
@@ -61,11 +63,15 @@ final class MonitorSession: ObservableObject {
     }
 
     private func hide(_ surface: Surface) {
-        guard visible.remove(surface) != nil, visible.isEmpty else { return }
-        statusTask?.cancel()
-        processTask?.cancel()
-        statusTask = nil
-        processTask = nil
+        guard visible.remove(surface) != nil else { return }
+        if visible.isSubset(of: [.menu]) {
+            processTask?.cancel()
+            processTask = nil
+        }
+        if visible.isEmpty {
+            statusTask?.cancel()
+            statusTask = nil
+        }
     }
 
     private func poll(every interval: UInt64, sample: @escaping @MainActor () async throws -> Void) -> Task<Void, Never> {

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Build the native app for this Mac using the installed Apple developer tools."""
 from pathlib import Path
+import argparse
 import platform
 import plistlib
 import shutil
 import subprocess
+import sys
 import tempfile
 
 project = Path(__file__).resolve().parent
@@ -31,12 +33,50 @@ usage_descriptions = {
         "清理时，Mole 会核对正在运行的应用，保护仍在使用的数据。"),
 }
 
+# macOS can attribute the embedded mixer's requests to the enclosing app.
+companion_usage_descriptions = {
+    "NSBluetoothAlwaysUsageDescription": (
+        "FineTune uses Bluetooth to connect paired audio devices from the Strata menu.",
+        "FineTune 使用蓝牙，从 Strata 菜单连接已配对的音频设备。"),
+    "NSAudioCaptureUsageDescription": (
+        "FineTune uses system audio access to adjust each app’s volume and route it to the output you choose.",
+        "FineTune 使用系统音频权限调节各个应用的音量，并将声音发送到你选择的输出设备。"),
+    "NSMicrophoneUsageDescription": (
+        "FineTune uses microphone access to capture app audio when an audio device also supports input.",
+        "使用兼具输入功能的音频设备时，FineTune 需要麦克风权限来采集应用音频。"),
+}
+
 
 def run(*args):
     subprocess.run([str(arg) for arg in args], check=True)
 
 
-def build():
+def validate_companion(app):
+    with (app / "Contents/Info.plist").open("rb") as info:
+        companion = plistlib.load(info)
+    custom_id = "io.github.ahyesyesyes111.FineTune.Custom"
+    identifier = companion.get("CFBundleIdentifier")
+    if (companion.get("StrataMixerBridgeVersion") != 2
+            or companion.get("StrataMixerControlsRevision", 0) < 1
+            or identifier not in {custom_id, "com.finetuneapp.FineTune"}):
+        raise ValueError("Select a FineTune build with Strata mixer support.")
+    run("codesign", "--verify", "--strict", app)
+    if identifier != custom_id:
+        return
+    signing = subprocess.check_output(
+        ["codesign", "--display", "--verbose=4", app], stderr=subprocess.STDOUT, text=True).splitlines()
+    if "Signature=adhoc" in signing and any(line.startswith("CodeDirectory ") and "runtime" in line for line in signing):
+        # Signature verification also succeeds for an individually valid
+        # Sparkle framework that dyld refuses to load into an ad-hoc hardened app.
+        executable = app / "Contents/MacOS" / companion["CFBundleExecutable"]
+        libraries = subprocess.check_output(["xcrun", "otool", "-arch", "all", "-L", executable], text=True)
+        if any(line.lstrip().startswith("@rpath/Sparkle.framework/") for line in libraries.splitlines()):
+            raise ValueError("This ad-hoc hardened FineTune links Sparkle. Use FineTune's scripts/build-strata-companion.py.")
+
+
+def build(finetune_app=None, *, without_finetune=False, finetune_packages=None):
+    if finetune_app:
+        validate_companion(finetune_app)
     output.mkdir(exist_ok=True)
     if destination.exists():
         with (destination / "Contents/Info.plist").open("rb") as info:
@@ -46,6 +86,13 @@ def build():
     # Build and sign on the local temporary volume, then publish the signed archive.
     with tempfile.TemporaryDirectory(prefix="strata-build-") as temp:
         stage = Path(temp)
+        if not without_finetune and finetune_app is None:
+            finetune_app = stage / "FineTune.app"
+            builder = repo / "components/FineTune/scripts/build-strata-companion.py"
+            command = [sys.executable, builder, finetune_app, "--derived-data", output / "FineTuneDerivedData"]
+            if finetune_packages:
+                command.extend(["--packages", finetune_packages])
+            run(*command)
         bundle = stage / "Strata.app"
         contents = bundle / "Contents"
         macos = contents / "MacOS"
@@ -61,11 +108,16 @@ def build():
         run(*swift, project / "Sources/ContourMark.swift", project / "Packaging/Icon.swift", "-o", stage / "make-icon")
         run(stage / "make-icon", iconset)
         run("iconutil", "-c", "icns", iconset, "-o", resources / "Strata.icns")
-        shutil.copy(repo / "mole", cli)
-        shutil.copytree(repo / "lib", cli / "lib", copy_function=shutil.copy)
+        mole_source = repo / "components/Mole/macos"
+        shutil.copy(mole_source / "mole", cli)
+        shutil.copytree(mole_source / "lib", cli / "lib", copy_function=shutil.copy)
         for name in ("clean", "optimize"):
-            shutil.copy(repo / f"bin/{name}.sh", cli / "bin")
+            shutil.copy(mole_source / f"bin/{name}.sh", cli / "bin")
         shutil.copy(repo / "LICENSE", resources)
+        if finetune_app:
+            helpers = contents / "Helpers"
+            helpers.mkdir()
+            run("/usr/bin/ditto", "--norsrc", "--noextattr", finetune_app, helpers / "FineTune.app")
         plist = {
             "CFBundleName": "Strata", "CFBundleDisplayName": "Strata", "CFBundleIconFile": "Strata",
             "CFBundleIdentifier": bundle_id, "CFBundlePackageType": "APPL", "CFBundleExecutable": "Strata",
@@ -76,19 +128,22 @@ def build():
             "NSPrincipalClass": "NSApplication", "NSHighResolutionCapable": True,
             "NSHumanReadableCopyright": "Includes the Mole CLI by tw93 and contributors. GPL-3.0.",
         }
+        descriptions = {**usage_descriptions, **companion_usage_descriptions} if finetune_app else usage_descriptions
         for index, language in enumerate(plist["CFBundleLocalizations"]):
-            localized = {key: values[index] for key, values in usage_descriptions.items()}
+            localized = {key: values[index] for key, values in descriptions.items()}
             (resources / f"{language}.lproj").mkdir()
             with (resources / f"{language}.lproj" / "InfoPlist.strings").open("wb") as file:
                 plistlib.dump(localized, file, fmt=plistlib.FMT_BINARY)
             if language == plist["CFBundleDevelopmentRegion"]:
                 plist.update(localized)
+        if finetune_app:
+            plist["NSHumanReadableCopyright"] += " Includes FineTune by Ronit Singh and contributors."
         with (contents / "Info.plist").open("wb") as file:
             plistlib.dump(plist, file)
         # Finder metadata inherited from a synced checkout is not part of the app.
         run("/usr/bin/xattr", "-cr", bundle)
         run("codesign", "--force", "--sign", "-", bundle)
-        run("codesign", "--verify", "--strict", bundle)
+        run("codesign", "--verify", "--deep", "--strict", bundle)
         # A zip preserves the signed resource layout on File Provider volumes.
         archive = stage / "Strata.zip"
         run("/usr/bin/ditto", "-c", "-k", "--keepParent", "--norsrc", "--noextattr", "--noqtn", bundle, archive)
@@ -114,4 +169,10 @@ def build():
 
 
 if __name__ == "__main__":
-    build()
+    parser = argparse.ArgumentParser(description=__doc__)
+    mixer = parser.add_mutually_exclusive_group()
+    mixer.add_argument("--without-finetune", action="store_true", help="Build the desktop app without the audio companion.")
+    mixer.add_argument("--finetune-app", type=Path, help="Use a prebuilt signed FineTune companion.")
+    mixer.add_argument("--finetune-packages", type=Path, help="Reuse a local Xcode SourcePackages cache for the companion build.")
+    args = parser.parse_args()
+    build(args.finetune_app, without_finetune=args.without_finetune, finetune_packages=args.finetune_packages)

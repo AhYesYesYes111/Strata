@@ -1,0 +1,939 @@
+#!/usr/bin/env bats
+
+load helpers
+
+desktop() {
+    local file="$1"
+    shift
+    mkdir -p "$(dirname "$file")"
+    { echo "[Desktop Entry]"; echo "Type=Application"; printf '%s\n' "$@"; } > "$file"
+}
+
+@test "truncate_by_display_width counts ASCII as one column without regex errors (#1918)" {
+    mole_run core "truncate_by_display_width 'abcdefghijklmnop' 10; truncate_by_display_width '中文abcdefghij' 10"
+    [ "$status" -eq 0 ]
+    [ "$output" = $'abcdefg...\n中文abc...' ]
+}
+
+@test "leftovers match the exact ID, never a longer name" {
+    mkdir -p "$HOME/.config/foo" "$HOME/.config/foobar" "$HOME/.cache/foo" "$HOME/.local/share/foo-extra"
+    mole_run uninstall 'mole_app_leftovers pacman foo foo'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"data	$HOME/.config/foo"* ]]
+    [[ "$output" == *"cache	$HOME/.cache/foo"* ]]
+    [[ "$output" != *foobar* ]]
+    [[ "$output" != *foo-extra* ]]
+}
+
+@test "an ID with a slash or a dot-dot never builds a path" {
+    mkdir -p "$HOME/.config"
+    mole_run uninstall 'mole_app_leftovers pacman "../x" "../x,a/b"'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "StartupWMClass is an ID only when one launcher declares it" {
+    local apps="$HOME/.local/share/applications"
+    desktop "$apps/a.desktop" "Name=A" "StartupWMClass=MoleUniqueClass"
+    desktop "$apps/b.desktop" "Name=B" "StartupWMClass=MoleSharedClass"
+    desktop "$apps/c.desktop" "Name=C" "StartupWMClass=MoleSharedClass"
+    desktop "$apps/d.desktop" "Name=D" "StartupWMClass=Electron"
+    mole_run uninstall 'echo "a=$(mole_desktop_wmclass_id "'"$apps"'/a.desktop") b=$(mole_desktop_wmclass_id "'"$apps"'/b.desktop") d=$(mole_desktop_wmclass_id "'"$apps"'/d.desktop")"'
+    [ "$output" = "a=MoleUniqueClass b= d=" ]
+}
+
+@test "an AppImage launcher lists the AppImage and owns its launcher and icon" {
+    local apps="$HOME/.local/share/applications"
+    mkdir -p "$HOME/Apps" "$HOME/.local/share/icons/hicolor/256x256/apps"
+    head -c 4096 /dev/zero > "$HOME/Apps/Tool.AppImage"
+    touch "$HOME/.local/share/icons/hicolor/256x256/apps/tool-icon.png"
+    desktop "$apps/tool.desktop" "Name=Tool" "Exec=\"$HOME/Apps/Tool.AppImage\" %U" "Icon=tool-icon"
+    desktop "$apps/elsewhere.desktop" "Name=Elsewhere" "Exec=/opt/Else.AppImage"
+    mole_run uninstall '_inventory_appimages; echo ---; mole_appimage_files tool "$HOME/Apps/Tool.AppImage"'
+    [ "$status" -eq 0 ]
+    [[ "$output" == "appimage	tool	Tool	4	tool	$HOME/Apps/Tool.AppImage	user"* ]]
+    [[ "$output" != *Elsewhere* ]]
+    [[ "$output" == *"$apps/tool.desktop"* ]]
+    [[ "$output" == *"tool-icon.png"* ]]
+}
+
+@test "an AppImage launcher is not also listed as its own leftover" {
+    mkdir -p "$HOME/.local/share/applications"
+    touch "$HOME/.local/share/applications/tool.desktop"
+    mole_run uninstall 'mole_app_leftovers appimage tool tool'
+    [[ "$output" != *"tool.desktop"* ]]
+}
+
+@test "Flatpak data is an orphan only when no installation has the app" {
+    mkdir -p "$HOME/.var/app/org.a.Installed/config" "$HOME/.var/app/org.b.Gone/data" "$HOME/.var/app/org.c.Empty"
+    fake_command flatpak '[[ "$1" == list ]] && echo org.a.Installed'
+    mole_run uninstall '_inventory_flatpak_orphans'
+    [ "$status" -eq 0 ]
+    [[ "$output" == "orphan	org.b.Gone	org.b.Gone	"* ]]
+    [[ "$output" != *org.a.Installed* ]]
+    [[ "$output" != *org.c.Empty* ]]
+}
+
+@test "no orphan is reported when flatpak cannot list its apps" {
+    mkdir -p "$HOME/.var/app/org.b.Gone/data"
+    fake_command flatpak 'exit 1'
+    mole_run uninstall '_inventory_flatpak_orphans'
+    [ -z "$output" ]
+}
+
+@test "package names outside pacman's alphabet never reach argv" {
+    mole_run uninstall 'for n in -rf "a b" "x;y" ok-name foo++ lib32-gcc; do mole_valid_package_name "$n" && echo "$n"; done'
+    [ "$output" = $'ok-name\nfoo++\nlib32-gcc' ]
+}
+
+@test "an orphan's removal is moving its sandbox home to the Trash" {
+    mkdir -p "$HOME/.var/app/org.b.Gone/data"
+    mole_run uninstall 'APP_KIND=(orphan); APP_ID=(org.b.Gone); APP_EXEC=(""); app_own_files 0'
+    [ "$output" = "$HOME/.var/app/org.b.Gone" ]
+}
+
+@test "game libraries, virtual machines and model stores are held back like browser profiles" {
+    mole_run uninstall 'for p in "$HOME/.var/app/com.valvesoftware.Steam" "$HOME/.var/app/com.usebottles.bottles" \
+        "$HOME/.var/app/org.gnome.Boxes" "$HOME/.ollama" "$HOME/.cache/huggingface" "$HOME/.cache/lm-studio" \
+        "$HOME/.var/app/org.b.Gone" "$HOME/.cache/foo"; do
+        printf "%s=%s\n" "${p#"$HOME"/}" "$(mole_leftover_holdback "$p" || echo -)"
+    done'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *".var/app/com.valvesoftware.Steam=game library"* ]]
+    [[ "$output" == *".var/app/com.usebottles.bottles=game library"* ]]
+    [[ "$output" == *".var/app/org.gnome.Boxes=virtual machines"* ]]
+    [[ "$output" == *".ollama=model store"* ]]
+    [[ "$output" == *".cache/huggingface=model store"* ]]
+    [[ "$output" == *".cache/lm-studio=model store"* ]]
+    [[ "$output" == *".var/app/org.b.Gone=-"* ]]
+    [[ "$output" == *".cache/foo=-"* ]]
+}
+
+@test "a held-back orphan waits for the data review and stays unless picked" {
+    mkdir -p "$HOME/.var/app/org.mozilla.firefox/.mozilla/firefox" "$HOME/.var/app/org.b.Gone/data"
+    mole_run uninstall 'APP_KIND=(orphan orphan); APP_ID=(org.mozilla.firefox org.b.Gone); APP_NAME=(Firefox Gone)
+        APP_DESKTOPS=("" ""); APP_EXEC=("" ""); APP_SCOPE=(user user); SELECTED=(0 1); REMOVED=()
+        collect_leftovers
+        for j in "${!LEFT_PATH[@]}"; do
+            printf "ROW %s %s %s %s\n" "${LEFT_APP[j]}" "${LEFT_CLASS[j]}" "${LEFT_ON[j]}" "${LEFT_NOTE[j]:--}"
+        done
+        mole_trash() {
+            shift
+            local p
+            for p in "$@"; do printf "TRASH %s\n" "$p"; rm -rf "$p"; done
+            MOLE_TRASH_MOVED=$#
+            MOLE_TRASH_ERRORS=()
+        }
+        mole_sudo_end() { :; }
+        remove_packages
+        printf "REMOVED %s\n" "${REMOVED[*]-}"'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ROW 0 app false browser profile"* ]]
+    [[ "$output" == *"ROW 1 app true -"* ]]
+    [[ "$output" == *"TRASH $HOME/.var/app/org.b.Gone"* ]]
+    [[ "$output" != *"TRASH $HOME/.var/app/org.mozilla.firefox"* ]]
+    [[ "$output" == *"REMOVED 1"* ]]
+    [ -d "$HOME/.var/app/org.mozilla.firefox/.mozilla/firefox" ]
+}
+
+@test "a dry run counts a held-back orphan as kept, not removed" {
+    mkdir -p "$HOME/.var/app/org.mozilla.firefox/.mozilla/firefox" "$HOME/.var/app/org.b.Gone/data"
+    mole_run uninstall 'DRY_RUN=true; ASSUME_YES=true
+        load_apps() {
+            APP_KIND=(orphan orphan); APP_ID=(org.mozilla.firefox org.b.Gone); APP_NAME=(Firefox Gone)
+            APP_DESKTOPS=("" ""); APP_EXEC=("" ""); APP_SCOPE=(user user); APP_KB=(10 10)
+        }
+        match_names() { SELECTED=(0 1); }
+        run_once false'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"kept, browser profile"* ]]
+    [[ "$output" == *"Would remove: 1 app"* ]]
+}
+
+# run_once on two orphans with the removal stubbed; $1 = SELECTED indices.
+kept_orphan_run_once() {
+    mkdir -p "$HOME/.var/app/org.mozilla.firefox/.mozilla/firefox" "$HOME/.var/app/org.b.Gone/data"
+    mole_run uninstall 'DRY_RUN=false; ASSUME_YES=true
+        load_apps() {
+            APP_KIND=(orphan orphan); APP_ID=(org.mozilla.firefox org.b.Gone); APP_NAME=(Firefox Gone)
+            APP_DESKTOPS=("" ""); APP_EXEC=("" ""); APP_SCOPE=(user user); APP_KB=(10 10)
+        }
+        match_names() { SELECTED=('"$1"'); }
+        choose_data() { :; }; running_apps() { return 1; }
+        remove_packages() {
+            echo REMOVE_CALLED
+            local j
+            for j in "${!LEFT_PATH[@]}"; do
+                [[ "${LEFT_CLASS[j]}" == app && "${LEFT_ON[j]}" == true ]] && REMOVED+=("${LEFT_APP[j]}")
+            done
+            return 0
+        }
+        plan_leftover_trash() { LEFTOVER_PATHS=(); }
+        refresh_after_removal() { :; }; stale_mime_associations() { :; }; get_free_space_kb() { echo 0; }
+        run_once false'
+}
+
+@test "keeping the only selected orphan in the data review removes nothing and asks nothing" {
+    kept_orphan_run_once 0
+    [ "$status" -eq 4 ]
+    [[ "$output" == *"Nothing to remove"* ]]
+    [[ "$output" != *REMOVE_CALLED* ]]
+    [ -d "$HOME/.var/app/org.mozilla.firefox/.mozilla/firefox" ]
+}
+
+@test "a kept orphan is not reported as an app that failed to go" {
+    kept_orphan_run_once "0 1"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *REMOVE_CALLED* ]]
+    [[ "$output" == *"Removed: Gone"* ]]
+    [[ "$output" != *"Not removed"* ]]
+}
+
+@test "an exact ID wins over a display name, and a tie is refused" {
+    mole_run uninstall '
+        APP_KIND=(flatpak pacman); APP_ID=(org.mozilla.firefox firefox); APP_NAME=(Firefox Firefox)
+        NAMES=(firefox); SELECTED=(); match_names; echo "picked=${SELECTED[*]}"
+        APP_KIND=(flatpak aur); APP_ID=(org.a.Tool tool-bin); APP_NAME=(Tool Tool)
+        NAMES=(tool); SELECTED=(); rc=0; match_names || rc=$?; echo "rc=$rc picked=${SELECTED[*]:-}"'
+    [[ "$output" == *"picked=1"* ]]
+    [[ "$output" == *"matches more than one app"* ]]
+    [[ "$output" == *"rc=1 picked="* ]]
+}
+
+@test "a running Flatpak app, or one flatpak cannot answer for, blocks uninstall" {
+    fake_command flatpak '[[ "$1" == ps ]] && echo org.test.App'
+    mole_run uninstall 'APP_KIND=(flatpak); APP_ID=(org.test.App); APP_NAME=(Test); APP_EXEC=(org.test.App); SELECTED=(0); running_apps && echo "running=${RUNNING[*]}"'
+    [ "$output" = "running=Test" ]
+    fake_command flatpak 'exit 1'
+    mole_run uninstall 'APP_KIND=(flatpak); APP_ID=(org.test.App); APP_NAME=(Test); APP_EXEC=(org.test.App); SELECTED=(0); running_apps && echo "running=${RUNNING[*]}"'
+    [ "$output" = "running=Test" ]
+    fake_command flatpak '[[ "$1" == ps ]] && echo org.other.App'
+    mole_run uninstall 'APP_KIND=(flatpak); APP_ID=(org.test.App); APP_NAME=(Test); APP_EXEC=(org.test.App); SELECTED=(0); running_apps || echo none'
+    [ "$output" = "none" ]
+}
+
+@test "outside a terminal, uninstall acts only with --yes" {
+    local apps="$HOME/.local/share/applications"
+    desktop "$apps/MoleWeb.desktop" "Name=MoleWeb" "Exec=omarchy-launch-webapp https://example.com"
+    run bash -c 'SCRIPT_DIR="$MOLE_TEST_REPO" bash "$MOLE_TEST_REPO/bin/uninstall.sh" MoleWeb < /dev/null'
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"pass --yes"* ]]
+    [ -f "$apps/MoleWeb.desktop" ]
+}
+
+@test "Exec wildcards are not expanded into some other AppImage" {
+    local apps="$HOME/.local/share/applications"
+    mkdir -p "$HOME/Apps"
+    touch "$HOME/Apps/Other.AppImage"
+    desktop "$apps/glob.desktop" "Name=Glob" "Exec=$HOME/Apps/*.AppImage"
+    mole_run uninstall '_inventory_appimages'
+    [ -z "$output" ]
+}
+
+@test "an AppImage icon outside the icon folders stays" {
+    local apps="$HOME/.local/share/applications"
+    mkdir -p "$HOME/Apps" "$HOME/Pictures"
+    touch "$HOME/Apps/Tool.AppImage" "$HOME/Pictures/me.png"
+    desktop "$apps/tool.desktop" "Name=Tool" "Exec=$HOME/Apps/Tool.AppImage" "Icon=$HOME/Pictures/me.png"
+    mole_run uninstall 'mole_appimage_files tool "$HOME/Apps/Tool.AppImage"'
+    [[ "$output" != *me.png* ]]
+}
+
+@test "an old Omarchy web app icon beside the launchers goes with it" {
+    mkdir -p "$HOME/.local/share/applications/icons"
+    touch "$HOME/.local/share/applications/HEY.desktop" "$HOME/.local/share/applications/icons/HEY.png"
+    mole_run uninstall 'mole_webapp_files HEY'
+    [[ "$output" == *"applications/icons/HEY.png"* ]]
+}
+
+@test "a running program whose name is longer than comm holds is seen as running" {
+    local long="mole-long-process-name-probe"
+    cp "$(command -v sleep)" "$TEST_ROOT/bin/$long"
+    "$TEST_ROOT/bin/$long" 30 &
+    OWNER_PID=$!
+    mole_run core 'rc=0; mole_process_running '"$long"' || rc=$?; echo "rc=$rc"'
+    [ "$output" = "rc=0" ]
+    kill "$OWNER_PID"
+    wait "$OWNER_PID" 2> /dev/null || true
+    OWNER_PID=""
+    mole_run core 'rc=0; mole_process_running '"$long"' || rc=$?; echo "rc=$rc"'
+    [ "$output" = "rc=1" ]
+}
+
+@test "a long name shares its first 15 bytes with another program: not taken for it" {
+    cp "$(command -v sleep)" "$TEST_ROOT/bin/mole-long-processXYZ"
+    "$TEST_ROOT/bin/mole-long-processXYZ" 30 &
+    OWNER_PID=$!
+    mole_run core 'rc=0; mole_process_running mole-long-process-name-probe || rc=$?; echo "rc=$rc"'
+    [ "$output" = "rc=1" ]
+}
+
+@test "a package whose wrapper starts a differently named program blocks uninstall while it runs" {
+    mkdir -p "$TEST_ROOT/opt/tool"
+    cp "$(command -v sleep)" "$TEST_ROOT/opt/tool/RealTool"
+    fake_command pacman '[[ "$1" == -Qlq && "$3" == tool ]] && { echo "$TEST_ROOT/opt/"; echo "$TEST_ROOT/opt/tool/"; echo "$TEST_ROOT/opt/tool/RealTool"; exit 0; }; exit 1'
+    fake_command pgrep 'exit 1'
+    export TEST_ROOT
+    "$TEST_ROOT/opt/tool/RealTool" 30 &
+    OWNER_PID=$!
+    local setup='APP_KIND=(pacman); APP_ID=(tool); APP_NAME=(Tool); APP_EXEC=(tool-launcher); SELECTED=(0)'
+    mole_run uninstall "$setup"'; running_apps && echo "running=${RUNNING[*]}"'
+    [ "$output" = "running=Tool" ]
+    kill "$OWNER_PID"
+    wait "$OWNER_PID" 2> /dev/null || true
+    OWNER_PID=""
+    mole_run uninstall "$setup"'; running_apps || echo none'
+    [ "$output" = "none" ]
+    fake_command pacman 'exit 1'
+    mole_run uninstall "$setup"'; running_apps && echo "running=${RUNNING[*]}"'
+    [ "$output" = "running=Tool" ]
+}
+
+@test "an interpreter running a package's file counts as that package running" {
+    mkdir -p "$TEST_ROOT/usr/lib/tool"
+    printf 'sleep 30\n' > "$TEST_ROOT/usr/lib/tool/main.sh"
+    mole_run core 'bash "'"$TEST_ROOT"'/usr/lib/tool/main.sh" & p=$!; sleep 0.2
+        rc=0; mole_files_running "'"$TEST_ROOT"'/usr/lib/tool/main.sh" || rc=$?; kill $p; echo "rc=$rc"'
+    [ "$output" = "rc=0" ]
+}
+
+@test "keys typed while Mole worked never confirm a removal" {
+    mole_run uninstall 'if uninstall_confirm "Remove 1 app?" <<< $'"'"'\n\n\n'"'"'; then echo CONFIRMED; else echo CANCELLED; fi'
+    [[ "$output" == *CANCELLED* ]]
+    [[ "$output" != *CONFIRMED* ]]
+}
+
+@test "the app selector drains queued keys before it reads any" {
+    run grep -B3 'paginated_multi_select "Select Apps to Remove"' "$REPO/bin/uninstall.sh"
+    [[ "$output" == *drain_pending_input* ]]
+    run grep -B3 'paginated_multi_select "Settings and data to remove"' "$REPO/bin/uninstall.sh"
+    [[ "$output" == *drain_pending_input* ]]
+}
+
+@test "a user service is stopped and disabled before its unit files go, timers and sockets included" {
+    local u="$HOME/.config/systemd/user"
+    mkdir -p "$u/default.target.wants"
+    touch "$u/tool.service" "$u/tool.timer" "$u/tool.socket"
+    fake_command systemctl 'echo "$*" >> "'"$TEST_ROOT"'/systemctl.log"; exit 0'
+    mole_run uninstall '
+        APP_KIND=(pacman); APP_ID=(tool); APP_NAME=(Tool); APP_DESKTOPS=(tool); APP_EXEC=(""); SELECTED=(0); WITH_DATA=true
+        collect_leftovers; REMOVED=(0); plan_leftover_trash
+        printf "trash=%s\n" "${LEFTOVER_PATHS[@]}"; printf "note=%s\n" "${UNIT_NOTES[@]}"'
+    [[ "$output" == *"trash=$u/tool.service"* ]]
+    [[ "$output" == *"trash=$u/tool.timer"* ]]
+    [[ "$output" == *"trash=$u/tool.socket"* ]]
+    grep -q -- "--user disable --now -- tool.service tool.timer tool.socket" "$TEST_ROOT/systemctl.log"
+}
+
+@test "user services stay where they are when systemctl --user cannot be reached" {
+    local u="$HOME/.config/systemd/user"
+    mkdir -p "$u"
+    touch "$u/tool.service"
+    fake_command systemctl 'echo "$*" >> "'"$TEST_ROOT"'/systemctl.log"; exit 1'
+    mole_run uninstall '
+        APP_KIND=(pacman); APP_ID=(tool); APP_NAME=(Tool); APP_DESKTOPS=(tool); APP_EXEC=(""); SELECTED=(0); WITH_DATA=true
+        collect_leftovers; REMOVED=(0); plan_leftover_trash
+        printf "trash=%s\n" "${LEFTOVER_PATHS[@]}"; printf "note=%s\n" "${UNIT_NOTES[@]}"'
+    [[ "$output" != *"trash=$u/tool.service"* ]]
+    [[ "$output" == *"left in place, systemctl --user is not reachable: tool.service"* ]]
+    [ -z "$(grep -- disable "$TEST_ROOT/systemctl.log" 2> /dev/null)" ]
+}
+
+@test "a package's enabled user unit is disabled before pacman, and enabled again when pacman keeps it" {
+    local u="$HOME/.config/systemd/user"
+    mkdir -p "$u/default.target.wants"
+    ln -s /usr/lib/systemd/user/toold.service "$u/default.target.wants/toold.service"
+    fake_command pacman '[[ "$1" == -Qlq ]] && { echo /usr/lib/systemd/user/; echo /usr/lib/systemd/user/toold.service; exit 0; }; [[ "$1" == -Qq ]] && exit 0; exit 1'
+    fake_command systemctl 'echo "$*" >> "'"$TEST_ROOT"'/systemctl.log"; [[ "$*" == *is-active* ]] && exit 3; exit 0'
+    fake_command sudo 'exit 0'
+    mole_run uninstall '
+        APP_KIND=(pacman); APP_ID=(tool); APP_NAME=(Tool); APP_DESKTOPS=(tool); APP_EXEC=(""); SELECTED=(0)
+        mole_sudo_ready() { return 0; }; mole_sudo_end() { :; }
+        collect_leftovers; remove_packages; echo "removed=${REMOVED[*]:-none}"'
+    [[ "$output" == *"removed=none"* ]]
+    [ "$(grep -n -- 'disable --now -- toold.service' "$TEST_ROOT/systemctl.log" | cut -d: -f1)" -lt "$(grep -n -- 'enable -- toold.service' "$TEST_ROOT/systemctl.log" | cut -d: -f1)" ]
+}
+
+@test "after launchers leave, the launcher index is rebuilt and stale associations are reported" {
+    local apps="$HOME/.local/share/applications"
+    mkdir -p "$apps" "$HOME/.config"
+    printf '[Default Applications]\nx-scheme-handler/mailto=HEY.desktop\ntext/plain=other.desktop\n' > "$HOME/.config/mimeapps.list"
+    fake_command update-desktop-database 'echo "$*" >> "'"$TEST_ROOT"'/udd.log"'
+    cp "$HOME/.config/mimeapps.list" "$TEST_ROOT/before"
+    mole_run uninstall '
+        APP_KIND=(webapp); APP_ID=(HEY); APP_NAME=(HEY); APP_DESKTOPS=(HEY); REMOVED=(0)
+        refresh_after_removal "$HOME/.local/share/applications/HEY.desktop"; stale_mime_associations'
+    grep -q -- "-q $apps" "$TEST_ROOT/udd.log"
+    [[ "$output" == *"HEY.desktop	x-scheme-handler/mailto"* ]]
+    [[ "$output" != *other.desktop* ]]
+    [ "$(cat "$HOME/.config/mimeapps.list")" = "$(cat "$TEST_ROOT/before")" ]
+}
+
+@test "--with-data leaves Waterfox, Floorp and other Gecko or Chromium family profiles unselected" {
+    mkdir -p "$HOME/.waterfox" "$HOME/.floorp" "$HOME/.config/thorium" "$HOME/.local/share/torbrowser" "$HOME/.cache/waterfox"
+    mole_run uninstall '
+        APP_KIND=(pacman pacman pacman pacman); APP_ID=(waterfox floorp thorium torbrowser); APP_NAME=(W F T B)
+        APP_DESKTOPS=(waterfox floorp thorium torbrowser); APP_EXEC=("" "" "" ""); SELECTED=(0 1 2 3); WITH_DATA=true
+        package_wants_links() { :; }; collect_leftovers
+        for j in "${!LEFT_PATH[@]}"; do echo "${LEFT_PATH[j]}=${LEFT_ON[j]}"; done'
+    [[ "$output" == *"$HOME/.waterfox=false"* ]]
+    [[ "$output" == *"$HOME/.floorp=false"* ]]
+    [[ "$output" == *"$HOME/.config/thorium=false"* ]]
+    [[ "$output" == *"$HOME/.local/share/torbrowser=false"* ]]
+    [[ "$output" == *"$HOME/.cache/waterfox=true"* ]]
+}
+
+@test "--with-data leaves Opera, Yandex, Cromite and Helium profiles unselected" {
+    mkdir -p "$HOME/.config/opera" "$HOME/.config/opera-beta" "$HOME/.config/yandex-browser-beta" "$HOME/.config/cromite" "$HOME/.config/net.imput.helium"
+    mole_run uninstall '
+        for p in opera opera-beta yandex-browser-beta cromite net.imput.helium; do
+            note=$(mole_leftover_holdback "$HOME/.config/$p") && echo "$p=$note" || echo "$p=selected"
+        done'
+    [ "$status" -eq 0 ]
+    [ "$(grep -c "=browser profile" <<< "$output")" -eq 5 ]
+}
+
+@test "--with-data still leaves browser profiles and offline music unselected" {
+    mkdir -p "$HOME/.config/chromium" "$HOME/.cache/chromium" "$HOME/.config/spotify" "$HOME/.cache/spotify"
+    mole_run uninstall '
+        APP_KIND=(pacman pacman); APP_ID=(chromium spotify); APP_NAME=(Chromium Spotify); APP_DESKTOPS=(chromium spotify); APP_EXEC=("" ""); SELECTED=(0 1); WITH_DATA=true
+        package_wants_links() { :; }; collect_leftovers
+        for j in "${!LEFT_PATH[@]}"; do echo "${LEFT_PATH[j]}=${LEFT_ON[j]}"; done'
+    [[ "$output" == *"$HOME/.config/chromium=false"* ]]
+    [[ "$output" == *"$HOME/.cache/chromium=true"* ]]
+    [[ "$output" == *"$HOME/.cache/spotify=false"* ]]
+    [[ "$output" == *"$HOME/.config/spotify=true"* ]]
+}
+
+@test "--with-data still leaves Viber chat history unselected" {
+    mkdir -p "$HOME/.ViberPC"
+    mole_run uninstall '
+        APP_KIND=(pacman); APP_ID=(viber); APP_NAME=(Viber); APP_DESKTOPS=(viber); APP_EXEC=(""); SELECTED=(0); WITH_DATA=true
+        package_wants_links() { :; }; collect_leftovers
+        for j in "${!LEFT_PATH[@]}"; do echo "${LEFT_PATH[j]}=${LEFT_ON[j]}"; done'
+    [[ "$output" == *"$HOME/.ViberPC=false"* ]]
+}
+
+@test "a Flatpak is removed from its own installation, system and custom ones through sudo" {
+    fake_command flatpak 'echo "$*" >> "'"$TEST_ROOT"'/flatpak.log"; exit 0'
+    fake_command sudo 'echo "$*" >> "'"$TEST_ROOT"'/sudo.log"; [[ "$1" == -* ]] && exit 0; exec "$@"'
+    mole_run uninstall '
+        APP_KIND=(flatpak flatpak flatpak flatpak); APP_ID=(org.a.One org.b.Two org.c.Three org.d.Four); APP_NAME=(One Two Three Four)
+        APP_SCOPE=(extra user "bad name" system); SELECTED=(0 1 2 3)
+        remove_packages; echo "removed=${REMOVED[*]}"'
+    grep -qx -- "uninstall --installation=extra -- org.a.One" "$TEST_ROOT/flatpak.log"
+    grep -qx -- "uninstall --user -- org.b.Two" "$TEST_ROOT/flatpak.log"
+    grep -qx -- "uninstall --system -- org.d.Four" "$TEST_ROOT/flatpak.log"
+    grep -qx -- "flatpak uninstall --installation=extra -- org.a.One" "$TEST_ROOT/sudo.log"
+    grep -qx -- "flatpak uninstall --system -- org.d.Four" "$TEST_ROOT/sudo.log"
+    [ -z "$(grep -- org.b.Two "$TEST_ROOT/sudo.log")" ]
+    [ -z "$(grep -E -- '(^| )-y( |$)|--noninteractive|--assumeyes' "$TEST_ROOT/flatpak.log")" ]
+    [ -z "$(grep -- org.c.Three "$TEST_ROOT/flatpak.log")" ]
+    [[ "$output" == *"flatpak removes org.d.Four from the system installation"* ]]
+    [[ "$output" == *"removed=0 1 3"* ]]
+}
+
+@test "a failed sudo is asked once: pacman and system Flatpaks are skipped on one line, the user one still goes" {
+    fake_command flatpak 'echo "$*" >> "'"$TEST_ROOT"'/flatpak.log"; exit 0'
+    fake_command sudo 'echo "$*" >> "'"$TEST_ROOT"'/sudo.log"; exit 1'
+    fake_command pacman '[[ "$1" == -Qq ]] && exit 0; exit 1'
+    mole_run uninstall '
+        APP_KIND=(pacman flatpak flatpak flatpak); APP_ID=(tool org.d.Four org.e.Five org.b.Two); APP_NAME=(Tool Four Five Two)
+        APP_DESKTOPS=(tool "" "" ""); APP_EXEC=("" "" "" ""); APP_SCOPE=("" system extra user); SELECTED=(0 1 2 3)
+        restore_package_units() { :; }
+        remove_packages < /dev/null; echo "removed=${REMOVED[*]}"'
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$TEST_ROOT/sudo.log")" -eq 1 ]
+    [ -z "$(grep -E -- 'org.d.Four|org.e.Five' "$TEST_ROOT/flatpak.log")" ]
+    grep -qx -- "uninstall --user -- org.b.Two" "$TEST_ROOT/flatpak.log"
+    [ "$(grep -c "Needs admin access" <<< "$output")" -eq 1 ]
+    [[ "$output" == *"Needs admin access, not removed: tool org.d.Four org.e.Five"* ]]
+    [[ "$output" != *"flatpak removes"* ]]
+    [[ "$output" == *"removed=3"* ]]
+}
+
+@test "a web app icon kept in its original format goes with it, a shared icon stays" {
+    local apps="$HOME/.local/share/applications" icons="$HOME/.local/share/icons/hicolor/256x256/apps"
+    mkdir -p "$icons"
+    touch "$icons/my-site.webp" "$icons/brand.svg" "$icons/shared.png"
+    desktop "$apps/My Site.desktop" "Name=My Site" "Exec=omarchy-launch-webapp https://example.com" "Icon=my-site"
+    desktop "$apps/Brand.desktop" "Name=Brand" "Exec=omarchy-launch-webapp https://b.example" "Icon=brand"
+    desktop "$apps/A.desktop" "Name=A" "Exec=omarchy-launch-webapp https://a.example" "Icon=shared"
+    desktop "$apps/B.desktop" "Name=B" "Exec=other" "Icon=shared"
+    mole_run uninstall 'mole_webapp_files "My Site"; echo ---; mole_webapp_files Brand; echo ---; mole_webapp_files A'
+    [[ "$output" == *"$icons/my-site.webp"* ]]
+    [[ "$output" == *"$icons/brand.svg"* ]]
+    [[ "$output" != *"shared.png"* ]]
+}
+
+@test "Omarchy terminal app launchers are listed with their launcher and icon" {
+    local apps="$HOME/.local/share/applications" icons="$HOME/.local/share/icons/hicolor/256x256/apps"
+    mkdir -p "$icons"
+    touch "$icons/lazy-tool.png"
+    desktop "$apps/Lazy Tool.desktop" "Name=Lazy Tool" "Exec=xdg-terminal-exec --app-id=TUI.float -e lazytool" "Icon=lazy-tool"
+    desktop "$apps/plain.desktop" "Name=Plain" "Exec=foot"
+    mole_run uninstall '_inventory_webapps; echo ---; mole_webapp_files "Lazy Tool"'
+    [[ "$output" == "tui	Lazy Tool	Lazy Tool	"* ]]
+    [[ "$output" != *Plain* ]]
+    [[ "$output" == *"$icons/lazy-tool.png"* ]]
+}
+
+@test "a terminal app launcher leaves only its launcher and icon, never the program's own files" {
+    local apps="$HOME/.local/share/applications" icons="$HOME/.local/share/icons/hicolor/256x256/apps"
+    mkdir -p "$icons" "$HOME/.config/btop" "$HOME/.btop" "$HOME/.local/state/btop" "$HOME/.cache/btop" "$HOME/.local/share/btop"
+    touch "$icons/btop.png"
+    desktop "$apps/btop.desktop" "Name=btop" "Exec=xdg-terminal-exec --app-id=TUI.float -e btop" "Icon=btop"
+    mole_run uninstall '
+        APP_KIND=(tui); APP_ID=(btop); APP_NAME=(btop); APP_DESKTOPS=(btop); APP_EXEC=(""); SELECTED=(0); WITH_DATA=true
+        package_wants_links() { :; }; collect_leftovers
+        for j in "${!LEFT_PATH[@]}"; do echo "${LEFT_PATH[j]}"; done'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$apps/btop.desktop"* ]]
+    [[ "$output" == *"$icons/btop.png"* ]]
+    [ "$(printf '%s\n' "$output" | grep -c .)" -eq 2 ]
+}
+
+@test "process probes read the real uid from status, match --opt=/path, and fall back to comm" {
+    local me other pr
+    me=$(id -u); other=$((me + 1)); pr="$TEST_ROOT/proc"
+    # Another user's process running the file is not the user's.
+    fake_proc "$pr/a" 100 "$other" keepassxc /usr/bin/keepassxc keepassxc
+    # A non-dumpable process of the user: no exe, argv not a path, comm matches.
+    fake_proc "$pr/b" 101 "$me" keepassxc - keepassxc
+    # A non-dumpable process of the user with another comm stays "not running".
+    fake_proc "$pr/c" 102 "$me" bash - bash
+    # An argument in --opt=/path form.
+    fake_proc "$pr/d" 103 "$me" electron /usr/bin/electron electron --app=/usr/lib/code/out/main.js
+    # A name longer than comm: no exe, argv[0] another name.
+    fake_proc "$pr/e" 104 "$me" telegram-deskto - launcher
+    fake_proc "$pr/f" 105 "$other" telegram-deskto /usr/bin/telegram-desktop /usr/bin/telegram-desktop
+    # A bare "/" argument (Flatpak's bwrap --bind / /) must not end the probe.
+    fake_proc "$pr/m" 106 "$me" bwrap /usr/bin/bwrap bwrap --bind / /
+    mole_run core '
+        for r in a b c; do _MOLE_PROC_ROOT='"$pr"'/$r; rc=0; mole_files_running /usr/bin/keepassxc || rc=$?; echo "$r=$rc"; done
+        _MOLE_PROC_ROOT='"$pr"'/d; rc=0; mole_files_running /usr/lib/code/out/main.js || rc=$?; echo "d=$rc"
+        for r in e f; do _MOLE_PROC_ROOT='"$pr"'/$r; rc=0; mole_process_running telegram-desktop || rc=$?; echo "$r=$rc"; done
+        _MOLE_PROC_ROOT='"$pr"'/m; rc=0; mole_files_running /usr/bin/keepassxc || rc=$?; echo "m=$rc"
+        _MOLE_PROC_ROOT='"$pr"'/none; rc=0; mole_files_running /usr/bin/keepassxc || rc=$?; echo "none=$rc"'
+    [ "$status" -eq 0 ]
+    [[ " ${lines[*]} " == *" m=1 "* ]]
+    [[ " ${lines[*]} " == *" a=1 "* ]]
+    [[ " ${lines[*]} " == *" b=2 "* ]]
+    [[ " ${lines[*]} " == *" c=1 "* ]]
+    [[ " ${lines[*]} " == *" d=0 "* ]]
+    [[ " ${lines[*]} " == *" e=2 "* ]]
+    [[ " ${lines[*]} " == *" f=1 "* ]]
+    [[ " ${lines[*]} " == *" none=2 "* ]]
+}
+
+@test "the comm fallback covers every executable of a package, and AppImages get it too" {
+    local me other pr
+    me=$(id -u); other=$((me + 1)); pr="$TEST_ROOT/proc"
+    mkdir -p "$TEST_ROOT/opt/tool" "$TEST_ROOT/apps"
+    printf '#!/bin/sh\n' > "$TEST_ROOT/opt/tool/ToolApp"; chmod +x "$TEST_ROOT/opt/tool/ToolApp"
+    echo data > "$TEST_ROOT/opt/tool/readme"
+    printf '#!/bin/sh\n' > "$TEST_ROOT/apps/Obsidian-1.5.3.AppImage"; chmod +x "$TEST_ROOT/apps/Obsidian-1.5.3.AppImage"
+    # A package executable outside */bin/, hidden by a non-dumpable process.
+    fake_proc "$pr/g" 100 "$me" ToolApp - ToolApp
+    fake_proc "$pr/h" 100 "$me" readme - readme
+    # AppImages: readable exe, hidden exe with the file's comm, another user's, other comm.
+    fake_proc "$pr/i" 100 "$me" Obsidian-1.5.3. "$TEST_ROOT/apps/Obsidian-1.5.3.AppImage"
+    fake_proc "$pr/j" 100 "$me" Obsidian-1.5.3. -
+    fake_proc "$pr/k" 100 "$other" Obsidian-1.5.3. "$TEST_ROOT/apps/Obsidian-1.5.3.AppImage"
+    fake_proc "$pr/l" 100 "$me" bash -
+    mole_run core '
+        list="'"$TEST_ROOT"'/opt/tool/ToolApp
+'"$TEST_ROOT"'/opt/tool/readme"
+        for r in g h; do _MOLE_PROC_ROOT='"$pr"'/$r; rc=0; mole_files_running "$list" || rc=$?; echo "$r=$rc"; done
+        for r in i j k l none; do _MOLE_PROC_ROOT='"$pr"'/$r; rc=0; mole_exe_running "'"$TEST_ROOT"'/apps/Obsidian-1.5.3.AppImage" || rc=$?; echo "$r=$rc"; done'
+    [ "$status" -eq 0 ]
+    [[ " ${lines[*]} " == *" g=2 "* ]]
+    [[ " ${lines[*]} " == *" h=1 "* ]]
+    [[ " ${lines[*]} " == *" i=0 "* ]]
+    [[ " ${lines[*]} " == *" j=2 "* ]]
+    [[ " ${lines[*]} " == *" k=1 "* ]]
+    [[ " ${lines[*]} " == *" l=1 "* ]]
+    [[ " ${lines[*]} " == *" none=2 "* ]]
+}
+
+@test "leftovers reach dot folders, known aliases, Flatpak overrides and AUR build folders" {
+    mkdir -p "$HOME/.foo" "$HOME/.vscode-oss" "$HOME/.local/share/flatpak/overrides" "$HOME/.cache/yay/foo-base" "$HOME/.cache/paru/clone/foo-base" "$HOME/.cache/yay/foo"
+    touch "$HOME/.local/share/flatpak/overrides/org.a.App" "$HOME/.cache/yay/foo-base/PKGBUILD" "$HOME/.cache/paru/clone/foo-base/PKGBUILD"
+    mkdir -p "$TEST_ROOT/db/local/foo-1.0-1"
+    printf '%%NAME%%\nfoo\n\n%%BASE%%\nfoo-base\n' > "$TEST_ROOT/db/local/foo-1.0-1/desc"
+    fake_command pacman '[[ "$1" == -Q ]] && { echo "foo 1.0-1"; exit 0; }; exit 1'
+    mole_run uninstall 'export MOLE_PACMAN_DBPATH="'"$TEST_ROOT"'/db"; mole_app_leftovers aur foo foo; mole_app_leftovers pacman code code; mole_app_leftovers flatpak org.a.App org.a.App'
+    [[ "$output" == *"data	$HOME/.foo"* ]]
+    [[ "$output" == *"cache	$HOME/.cache/yay/foo-base"* ]]
+    [[ "$output" == *"cache	$HOME/.cache/paru/clone/foo-base"* ]]
+    [ -z "$(grep -x "cache	$HOME/.cache/yay/foo" <<< "$output")" ]
+    [[ "$output" == *"data	$HOME/.vscode-oss"* ]]
+    [[ "$output" == *"data	$HOME/.local/share/flatpak/overrides/org.a.App"* ]]
+}
+
+@test "a shared name is never a leftover, and a path another installed app uses stays" {
+    mkdir -p "$HOME/.config/fontconfig" "$HOME/.config/Code" "$HOME/.config/tool"
+    mole_run uninstall 'mole_app_leftovers pacman fontconfig fontconfig'
+    [ -z "$output" ]
+    mole_run uninstall '
+        APP_KIND=(pacman aur); APP_ID=(code visual-studio-code-bin); APP_NAME=("Code OSS" "VS Code"); APP_DESKTOPS=("code,Code" "visual-studio-code,Code"); APP_EXEC=("" ""); SELECTED=(0); WITH_DATA=true
+        package_wants_links() { :; }; collect_leftovers; printf "%s\n" "${LEFT_PATH[@]}"'
+    [[ "$output" != *"$HOME/.config/Code"* ]]
+}
+
+@test "xdg-ninja rows are offered with their class, caches selected and data not" {
+    mkdir -p "$HOME/.nvim" "$HOME/.MakeMKV"
+    touch "$HOME/.nvimlog" "$HOME/.nviminfo" "$HOME/MakeMKV_log.txt" "$HOME/.alacritty.yml"
+    mole_run uninstall 'mole_app_leftovers pacman neovim neovim; mole_app_leftovers aur makemkv makemkv; mole_app_leftovers pacman alacritty Alacritty'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"data	$HOME/.nvim"$'\n'* ]]
+    [[ "$output" == *"data	$HOME/.nviminfo"* ]]
+    [[ "$output" == *"cache	$HOME/.nvimlog"* ]]
+    [[ "$output" == *"data	$HOME/.MakeMKV"* ]]
+    [[ "$output" == *"cache	$HOME/MakeMKV_log.txt"* ]]
+    [[ "$output" == *"data	$HOME/.alacritty.yml"* ]]
+    [ -z "$(grep -x "data	$HOME/.nvimlog" <<< "$output")" ]
+    mole_run uninstall '
+        APP_KIND=(pacman); APP_ID=(neovim); APP_NAME=(Neovim); APP_DESKTOPS=(nvim); APP_EXEC=(""); SELECTED=(0); WITH_DATA=false
+        package_wants_links() { :; }; collect_leftovers
+        for j in "${!LEFT_PATH[@]}"; do echo "${LEFT_PATH[j]}=${LEFT_ON[j]}"; done'
+    [[ "$output" == *"$HOME/.nvimlog=true"* ]]
+    [[ "$output" == *"$HOME/.nvim=false"* ]]
+}
+
+@test "an xdg-ninja path another installed app maps to stays, and ~/.mozilla waits for the whole Mozilla family" {
+    mkdir -p "$HOME/.mozilla/firefox"
+    touch "$HOME/.vimrc"
+    mole_run uninstall '
+        APP_KIND=(pacman pacman); APP_ID=(vim gvim); APP_NAME=(Vim GVim); APP_DESKTOPS=(vim gvim); APP_EXEC=("" ""); SELECTED=(0); WITH_DATA=true
+        package_wants_links() { :; }; collect_leftovers; printf "%s\n" "${LEFT_PATH[@]}"'
+    [ "$status" -eq 0 ]
+    [ -z "$(grep -xF "$HOME/.vimrc" <<< "$output")" ]
+    mole_run uninstall '
+        APP_KIND=(pacman aur); APP_ID=(firefox icecat); APP_NAME=(Firefox IceCat); APP_DESKTOPS=(firefox icecat); APP_EXEC=("" ""); SELECTED=(0); WITH_DATA=true
+        package_wants_links() { :; }; collect_leftovers; printf "%s\n" "${LEFT_PATH[@]}"'
+    [ -z "$(grep -xF "$HOME/.mozilla" <<< "$output")" ]
+    mole_run uninstall '
+        APP_KIND=(pacman aur); APP_ID=(firefox firefox-beta); APP_NAME=(Firefox "Firefox Beta"); APP_DESKTOPS=(firefox firefox-beta); APP_EXEC=("" ""); SELECTED=(0); WITH_DATA=true
+        package_wants_links() { :; }; collect_leftovers; printf "%s\n" "${LEFT_PATH[@]}"'
+    [ -z "$(grep -xF "$HOME/.mozilla" <<< "$output")" ]
+    mole_run uninstall '
+        APP_KIND=(pacman); APP_ID=(firefox); APP_NAME=(Firefox); APP_DESKTOPS=(firefox); APP_EXEC=(""); SELECTED=(0); WITH_DATA=true
+        package_wants_links() { :; }; collect_leftovers
+        for j in "${!LEFT_PATH[@]}"; do echo "${LEFT_PATH[j]}=${LEFT_ON[j]}=${LEFT_NOTE[j]}"; done'
+    [[ "$output" == *"$HOME/.mozilla=false=browser profile"* ]]
+}
+
+@test "xdg-ninja paths that are shared, credentials or another program's are never offered" {
+    mkdir -p "$HOME/.purple" "$HOME/.vnc" "$HOME/.sane" "$HOME/.arduino15" "$HOME/Zotero" "$HOME/.claude" \
+        "$HOME/.ts3client" "$HOME/.anydesk" "$HOME/.k8slens" "$HOME/.lunarclient" "$HOME/.parsec"
+    touch "$HOME/.steampid" "$HOME/.notmuch-config" "$HOME/.claude.json"
+    mole_run uninstall 'for p in pidgin tigervnc xsane arduino zotero claude-code steam notmuch teamspeak3 anydesk-bin lens-bin lunar-client parsec-bin; do mole_app_leftovers pacman "$p" "$p"; done'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "the plan shows each leftover's size and the total" {
+    mkdir -p "$HOME/.cache/tool"
+    head -c 200000 /dev/zero > "$HOME/.cache/tool/blob"
+    mole_run uninstall '
+        APP_KIND=(pacman); APP_ID=(tool); APP_NAME=(Tool); APP_DESKTOPS=(tool); APP_EXEC=(""); APP_KB=(10); SELECTED=(0)
+        package_wants_links() { :; }; collect_leftovers; show_plan'
+    [[ "$output" == *"~/.cache/tool"*"KB"* ]]
+    [[ "$output" == *"Leftovers to Trash: 1 item, "* ]]
+}
+
+@test "--list prints JSON when its output is piped" {
+    local apps="$HOME/.local/share/applications"
+    desktop "$apps/Mole \"Web\".desktop" "Name=Mole \"Web\"" "Exec=omarchy-launch-webapp https://example.com"
+    run bash -c 'SCRIPT_DIR="$MOLE_TEST_REPO" bash "$MOLE_TEST_REPO/bin/uninstall.sh" --list | cat'
+    [ "$status" -eq 0 ]
+    [[ "$output" == "["* ]]
+    [[ "$output" == *'"name": "Mole \"Web\"", "uninstall_name": "Mole \"Web\"", "source": "Web app"'* ]]
+    if command -v python3 > /dev/null; then
+        python3 -c 'import json,sys; json.loads(sys.stdin.read())' <<< "$output"
+    fi
+}
+
+@test "last used comes from the app's own folders, and an untouched program's atime says nothing" {
+    mkdir -p "$HOME/.config/tool"
+    touch -d '3 days ago' "$HOME/.config/tool/x" "$HOME/.config/tool"
+    mkdir -p "$TEST_ROOT/prog"
+    printf '#!/bin/sh\n' > "$TEST_ROOT/prog/never-run"
+    chmod +x "$TEST_ROOT/prog/never-run"
+    touch -a -d '2 days ago' "$TEST_ROOT/prog/never-run"
+    mole_run uninstall '
+        APP_KIND=(pacman pacman); APP_ID=(tool other); APP_DESKTOPS=(tool other); APP_EXEC=("" "'"$TEST_ROOT"'/prog/never-run")
+        a=$(app_last_used 0); b=$(app_last_used 1); echo "$(last_used_label "$a") $(last_used_label "$b")"'
+    [ "$output" = "3d ago Unknown" ]
+}
+
+# /usr stand-in on a btrfs subvolume snapper snapshots ($1 = btrfs or ext4).
+snapshotted_usr() {
+    mkdir -p "$TEST_ROOT/sys/usr" "$TEST_ROOT/snapper/configs"
+    printf '1 0 0:1 / / rw - ext4 /dev/vda1 rw\n2 1 0:2 / %s rw - %s /dev/vda2 rw\n' "$TEST_ROOT/sys" "$1" > "$TEST_ROOT/mountinfo"
+    printf 'SUBVOLUME="%s"\n' "$TEST_ROOT/sys" > "$TEST_ROOT/snapper/configs/root"
+}
+
+# run_once with the scan, prompts and removal stubbed; $1 = DRY_RUN, $2 = kinds.
+snapshot_run_once() {
+    mole_run uninstall '_MOLE_MOUNTINFO="'"$TEST_ROOT"'/mountinfo"
+        _MOLE_SNAPPER_CONFIGS="'"$TEST_ROOT"'/snapper/configs"; _MOLE_SNAPPER_SYSCONFIGS=()
+        PACKAGE_ROOT="'"$TEST_ROOT"'/sys/usr"; DRY_RUN='"$1"'; ASSUME_YES=true
+        load_apps() { APP_KIND=('"$2"'); APP_ID=(tool); APP_NAME=(Tool); APP_DESKTOPS=(tool); APP_EXEC=(""); APP_KB=(10); }
+        match_names() { SELECTED=(0); }
+        collect_leftovers() { :; }; choose_data() { :; }; show_plan() { :; }; running_apps() { return 1; }
+        remove_packages() { REMOVED=(0); }; plan_leftover_trash() { LEFTOVER_PATHS=(); }
+        refresh_after_removal() { :; }; stale_mime_associations() { :; }; get_free_space_kb() { echo 0; }
+        run_once false'
+}
+
+@test "uninstall: removed packages on a snapshotted subvolume say their space returns as snapshots rotate" {
+    snapshotted_usr btrfs
+    snapshot_run_once false pacman
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Removed: Tool"* ]]
+    [[ "$output" == *"Package files are freed as snapshots rotate"* ]]
+    snapshot_run_once true aur
+    [[ "$output" == *"Would remove: 1 app"* ]]
+    [[ "$output" == *"Package files are freed as snapshots rotate"* ]]
+}
+
+@test "uninstall: no snapshot line off snapshots, for non-packages, or when the probe cannot tell" {
+    snapshotted_usr ext4
+    snapshot_run_once false pacman
+    [[ "$output" == *"Removed: Tool"* ]]
+    [[ "$output" != *"snapshots"* ]]
+    snapshotted_usr btrfs
+    snapshot_run_once false webapp
+    [[ "$output" != *"snapshots"* ]]
+    rm "$TEST_ROOT/mountinfo"
+    snapshot_run_once false pacman
+    [[ "$output" == *"Removed: Tool"* ]]
+    [[ "$output" != *"snapshots"* ]]
+}
+
+# ---- Debian and Ubuntu: apt and Snap ----
+
+@test "apt: manual packages with a launcher are listed with their size; automatic, protected and shared launchers are not" {
+    local apps="$TEST_ROOT/apps"
+    mkdir -p "$apps"
+    for id in gimp debian-xterm debian-uxterm gnome-control-center libfoo-tool shared; do
+        printf '[Desktop Entry]\nName=%s\nExec=%s\n' "$id" "$id" > "$apps/$id.desktop"
+    done
+    printf '[Desktop Entry]\nName=Hidden\nNoDisplay=true\n' > "$apps/hidden.desktop"
+    fake_command apt-get 'exit 0'
+    fake_command apt-mark '[[ "$1" == showmanual ]] && printf "gimp\nxterm\ngnome-control-center\nhidden-pkg\n"; exit 0'
+    fake_command dpkg-query '
+        if [[ "$1" == -S ]]; then
+            shift; [[ "$1" == -- ]] && shift
+            for f in "$@"; do case "${f##*/}" in
+                gimp.desktop) echo "gimp: $f" ;;
+                debian-xterm.desktop | debian-uxterm.desktop) echo "xterm:amd64: $f" ;;
+                gnome-control-center.desktop) echo "gnome-control-center: $f" ;;
+                libfoo-tool.desktop) echo "libfoo-tool: $f" ;;
+                shared.desktop) echo "gimp, xterm: $f" ;;
+            esac; done; exit 0
+        fi
+        [[ "$1" == -W ]] && { printf "gimp\t20480\nxterm:amd64\t1024\n"; exit 0; }
+        exit 1'
+    mole_run uninstall 'MOLE_SYS_APPS_DIR="'"$apps"'"; _inventory_apt | sort'
+    [ "$status" -eq 0 ]
+    [ "$(grep -c . <<< "$output")" -eq 2 ]
+    grep -qxF $'apt\tgimp\tgimp\t20480\tgimp\tgimp\tsystem' <<< "$output"
+    grep -qE $'^apt\txterm\tdebian-xterm\t1024\tdebian-uxterm,debian-xterm\tdebian-xterm\t' <<< "$output"
+}
+
+@test "apt: dpkg's bare folders are marked like pacman's, so /usr never counts as the app's own file" {
+    mkdir -p "$TEST_ROOT/usr/bin"
+    : > "$TEST_ROOT/usr/bin/tool"
+    fake_command dpkg-query '[[ "$1" == -L ]] && { echo /.; echo "'"$TEST_ROOT"'/usr"; echo "'"$TEST_ROOT"'/usr/bin"; echo "'"$TEST_ROOT"'/usr/bin/tool"; exit 0; }; exit 1'
+    mole_run uninstall 'mole_pkg_files apt tool'
+    [ "$status" -eq 0 ]
+    [ "$output" = "$TEST_ROOT/usr/
+$TEST_ROOT/usr/bin/
+$TEST_ROOT/usr/bin/tool" ]
+    mole_run uninstall 'mole_pkg_files apt "-rf"'
+    [ "$status" -ne 0 ]
+}
+
+@test "apt: removal keeps apt's own confirmation, names dependents first, and a package left as rc counts as removed" {
+    fake_command sudo 'echo "$*" >> "'"$TEST_ROOT"'/sudo.log"; [[ "$1" == -* ]] && exit 0; exec "$@"'
+    fake_command pgrep 'exit 1'
+    fake_command apt-get 'echo "$*" >> "'"$TEST_ROOT"'/apt.log"
+        [[ "$1" == -s ]] && { echo "Remv gimp [2.10]"; echo "Remv ubuntu-desktop [1.5]"; echo "Remv xterm [1]"; }
+        exit 0'
+    fake_command dpkg-query '[[ "$1" == -W ]] && { case "$4" in gimp) echo -n "rc " ;; xterm) echo -n "ii " ;; esac; exit 0; }; exit 1'
+    mole_run uninstall '
+        APP_KIND=(apt apt); APP_ID=(gimp xterm); APP_NAME=(GIMP XTerm); APP_KB=(1 1)
+        APP_DESKTOPS=(gimp xterm); APP_EXEC=("" ""); APP_SCOPE=(system system); SELECTED=(0 1)
+        LEFT_PATH=(); show_plan
+        restore_package_units() { echo restored; }
+        remove_packages < /dev/null; echo "removed=${REMOVED[*]}"'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"apt also removes the packages that depend on these: ubuntu-desktop"* ]]
+    grep -qx -- "apt-get remove -- gimp xterm" "$TEST_ROOT/sudo.log"
+    [ -z "$(grep -E -- '(^| )(-y|--yes|--assume-yes|purge)( |$)' "$TEST_ROOT/apt.log")" ]
+    [[ "$output" == *"removed=0"* ]]
+    [[ "$output" == *"restored"* ]]
+    grep -q 'REMOVED apt:gimp' "$HOME/.local/state/mole/operations.log"
+}
+
+@test "apt: nothing runs while apt or dpkg is busy, or when Mole cannot tell" {
+    fake_command sudo 'echo "$*" >> "'"$TEST_ROOT"'/sudo.log"; exit 0'
+    fake_command apt-get 'exit 0'
+    fake_command dpkg-query 'echo -n "ii "; exit 0'
+    for probe in 'case "$*" in *dpkg*) exit 0 ;; esac; exit 1' 'exit 3'; do
+        fake_command pgrep "$probe"
+        mole_run uninstall '
+            APP_KIND=(apt); APP_ID=(gimp); APP_NAME=(GIMP); APP_SCOPE=(system); SELECTED=(0)
+            restore_package_units() { :; }
+            remove_packages < /dev/null; echo "removed=${REMOVED[*]-}"'
+        [[ "$output" == *"apt or dpkg is running"* ]]
+        [[ "$output" == *"removed="* && "$output" != *"removed=0"* ]]
+    done
+    [ ! -e "$TEST_ROOT/sudo.log" ]
+}
+
+@test "snap: launchers name the snap, size is the current revision, bases without launchers never show" {
+    local desk="$TEST_ROOT/snapdesk" snaps="$TEST_ROOT/snaps"
+    mkdir -p "$desk" "$snaps"
+    printf '[Desktop Entry]\nName=Firefox\nExec=firefox\n' > "$desk/firefox_firefox.desktop"
+    printf '[Desktop Entry]\nName=Store\nExec=snap-store\n' > "$desk/snapd-desktop-integration_x.desktop"
+    printf '[Desktop Entry]\nName=Odd\n' > "$desk/nounderscore.desktop"
+    head -c 2048000 /dev/zero > "$snaps/firefox_4848.snap"
+    fake_command snap '[[ "$1" == list ]] && { printf "Name Version Rev Tracking Publisher Notes\nfirefox 130.0 4848 latest/stable mozilla -\ncore22 2024 1564 latest/stable canonical base\nsnapd-desktop-integration 0.9 178 latest/stable canonical -\n"; exit 0; }; exit 1'
+    mole_run uninstall 'MOLE_SNAP_DESKTOP_DIR="'"$desk"'"; MOLE_SNAP_SNAPS_DIR="'"$snaps"'"; _inventory_snap'
+    [ "$status" -eq 0 ]
+    [ "$(grep -c . <<< "$output")" -eq 1 ]
+    grep -qxF $'snap\tfirefox\tFirefox\t2000\tfirefox_firefox\tfirefox\tsystem' <<< "$output"
+}
+
+@test "snap: removal goes through sudo snap remove after Mole's own confirmation, and a running snap blocks it" {
+    fake_command sudo 'echo "$*" >> "'"$TEST_ROOT"'/sudo.log"; [[ "$1" == -* ]] && exit 0; exec "$@"'
+    fake_command snap 'echo "$*" >> "'"$TEST_ROOT"'/snap.log"; [[ "$1" == remove ]] && { : > "'"$TEST_ROOT"'/gone"; exit 0; }; [[ "$1" == list ]] && { echo "Name Version Rev Tracking Publisher Notes"; [[ -e "'"$TEST_ROOT"'/gone" ]] || echo "firefox 130 4848 latest/stable mozilla -"; exit 0; }; exit 1'
+    mole_run uninstall '
+        APP_KIND=(snap); APP_ID=(firefox); APP_NAME=(Firefox); APP_SCOPE=(system); SELECTED=(0)
+        remove_packages < /dev/null; echo "removed=${REMOVED[*]-}"'
+    [ "$status" -eq 0 ]
+    grep -qx -- "snap remove -- firefox" "$TEST_ROOT/sudo.log"
+    [[ "$output" == *"removed=0"* ]]
+    grep -q 'REMOVED snap:firefox' "$HOME/.local/state/mole/operations.log"
+    # Leftovers: snap deletes ~/snap/<name> itself.
+    mkdir -p "$HOME/snap/firefox" "$HOME/.config/firefox"
+    mole_run uninstall 'mole_app_leftovers snap firefox firefox_firefox'
+    [ -z "$output" ]
+    # A process in the snap's cgroup is the snap running.
+    mkdir -p "$TEST_ROOT/proc/self" "$TEST_ROOT/proc/4242"
+    printf 'Uid:\t%s\t%s\t%s\t%s\n' "$(id -u)" "$(id -u)" "$(id -u)" "$(id -u)" > "$TEST_ROOT/proc/4242/status"
+    echo "0::/user.slice/user-1000.slice/user@1000.service/app.slice/snap.firefox.firefox-1234.scope" > "$TEST_ROOT/proc/4242/cgroup"
+    mole_run uninstall '_MOLE_PROC_ROOT="'"$TEST_ROOT"'/proc"; APP_KIND=(snap); APP_ID=(firefox); APP_NAME=(Firefox); SELECTED=(0); running_apps && echo "running=${RUNNING[*]}"'
+    [[ "$output" == *"running=Firefox"* ]]
+}
+
+@test "apt: a held package or a removal cut short is still installed, a purged or rc one is gone, an unreadable one cannot tell" {
+    for st in "hi " "rH " "ii " "iU "; do
+        fake_command dpkg-query '[[ "$1" == -W ]] && { printf "%s" "'"$st"'"; exit 0; }; exit 1'
+        mole_run uninstall 'rc=0; mole_pkg_installed apt gimp || rc=$?; echo "rc=$rc"'
+        [[ "$output" == *"rc=0"* ]]
+    done
+    for st in "rc " "un " "pn "; do
+        fake_command dpkg-query '[[ "$1" == -W ]] && { printf "%s" "'"$st"'"; exit 0; }; exit 1'
+        mole_run uninstall 'rc=0; mole_pkg_installed apt gimp || rc=$?; echo "rc=$rc"'
+        [[ "$output" == *"rc=1"* ]]
+    done
+    fake_command dpkg-query '[[ "$*" == *" dpkg" ]] && exit 0; exit 1'
+    mole_run uninstall 'rc=0; mole_pkg_installed apt gimp || rc=$?; echo "rc=$rc"'
+    [[ "$output" == *"rc=1"* ]]
+    fake_command dpkg-query 'exit 2'
+    mole_run uninstall 'rc=0; mole_pkg_installed apt gimp || rc=$?; echo "rc=$rc"'
+    [[ "$output" == *"rc=2"* ]]
+    # A held package apt kept is not logged as removed, and its units return.
+    fake_command sudo '[[ "$1" == -* ]] && exit 0; exec "$@"'
+    fake_command pgrep 'exit 1'
+    fake_command apt-get 'exit 0'
+    fake_command dpkg-query '[[ "$1" == -W ]] && { printf "hi "; exit 0; }; exit 1'
+    mole_run uninstall '
+        APP_KIND=(apt); APP_ID=(gimp); APP_NAME=(GIMP); APP_SCOPE=(system); SELECTED=(0)
+        restore_package_units() { echo restored; }
+        remove_packages < /dev/null; echo "removed=${REMOVED[*]-}"'
+    [[ "$output" == *"restored"* && "$output" != *"removed=0"* ]]
+    [ ! -e "$HOME/.local/state/mole/operations.log" ] || ! grep -q 'REMOVED apt:gimp' "$HOME/.local/state/mole/operations.log"
+}
+
+@test "snap: data in ~/snap/<name> is named in the plan, and --yes never removes a snap that holds data" {
+    fake_command sudo 'echo "$*" >> "'"$TEST_ROOT"'/sudo.log"; [[ "$1" == -* ]] && exit 0; exec "$@"'
+    fake_command snap '[[ "$1" == get ]] && { echo 31d; exit 0; }; [[ "$1" == list ]] && { echo "firefox 130 4848 latest/stable mozilla -"; exit 0; }; echo "$*" >> "'"$TEST_ROOT"'/snap.log"; exit 0'
+    mkdir -p "$HOME/snap/firefox/common/.mozilla"
+    head -c 4096 /dev/zero > "$HOME/snap/firefox/common/.mozilla/places.sqlite"
+    mole_run uninstall '
+        APP_KIND=(snap); APP_ID=(firefox); APP_NAME=(Firefox); APP_KB=(1); SELECTED=(0); LEFT_PATH=()
+        show_plan'
+    [[ "$output" == *"snap deletes ~/snap/firefox with firefox"*"profile and data; snap keeps a snapshot for 31d"* ]]
+    mole_run uninstall '
+        ASSUME_YES=true; APP_KIND=(snap); APP_ID=(firefox); APP_NAME=(Firefox); SELECTED=(0)
+        remove_packages < /dev/null; echo "removed=${REMOVED[*]-}"'
+    [[ "$output" == *"Firefox keeps data in ~/snap/firefox"*"run mo uninstall firefox in a terminal"* ]]
+    [ ! -e "$TEST_ROOT/snap.log" ]
+    fake_command snap '[[ "$1" == get ]] && { echo no; exit 0; }; exit 0'
+    mole_run uninstall '
+        APP_KIND=(snap); APP_ID=(firefox); APP_NAME=(Firefox); APP_KB=(1); SELECTED=(0); LEFT_PATH=()
+        show_plan'
+    [[ "$output" == *"this system keeps no snapshot of it"* ]]
+    # A symlinked or unreadable ~/snap/<name> counts as holding data.
+    rm -rf "$HOME/snap/firefox"
+    mole_run uninstall 'snap_home_has_data firefox && echo data || echo none'
+    [[ "$output" == *none* ]]
+    mkdir -p "$TEST_ROOT/elsewhere"
+    ln -s "$TEST_ROOT/elsewhere" "$HOME/snap/firefox"
+    mole_run uninstall 'snap_home_has_data firefox && echo data || echo none'
+    [[ "$output" == *data* ]]
+    rm "$HOME/snap/firefox"
+    if [ "$(id -u)" -ne 0 ]; then
+        mkdir -p "$HOME/snap/firefox"
+        chmod 000 "$HOME/snap/firefox"
+        mole_run uninstall 'snap_home_has_data firefox && echo data || echo none'
+        chmod 755 "$HOME/snap/firefox"
+        [[ "$output" == *data* ]]
+    fi
+}
+
+@test "VM images, Wine bottles and local-only chat stores are held back, native and Flatpak" {
+    mole_run uninstall 'for p in "$HOME/.local/share/gnome-boxes" "$HOME/.local/share/bottles" \
+        "$HOME/.config/Signal" "$HOME/.var/app/org.signal.Signal" "$HOME/.config/Element" "$HOME/.var/app/im.riot.Riot" \
+        "$HOME/.config/Session" "$HOME/.var/app/network.loki.Session" "$HOME/.local/share/jami" "$HOME/.var/app/net.jami.Jami" \
+        "$HOME/.var/app/com.viber.Viber" "$HOME/.config/telegram-desktop" "$HOME/.local/share/gnome-boxes-x"; do
+        printf "%s=%s\n" "${p#"$HOME"/}" "$(mole_leftover_holdback "$p" || echo -)"
+    done'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *".local/share/gnome-boxes=virtual machines"* ]]
+    [[ "$output" == *".local/share/bottles=game library"* ]]
+    for p in .config/Signal .var/app/org.signal.Signal .config/Element .var/app/im.riot.Riot .config/Session \
+        .var/app/network.loki.Session .local/share/jami .var/app/net.jami.Jami .var/app/com.viber.Viber; do
+        [[ "$output" == *"$p=chat history"* ]] || { echo "$p: $output"; return 1; }
+    done
+    [[ "$output" == *".config/telegram-desktop=-"* ]]
+    [[ "$output" == *".local/share/gnome-boxes-x=-"* ]]
+}
+
+@test "--with-data leaves native GNOME Boxes images and Signal messages unselected" {
+    mkdir -p "$HOME/.local/share/gnome-boxes/images" "$HOME/.config/Signal"
+    mole_run uninstall '
+        APP_KIND=(pacman pacman); APP_ID=(gnome-boxes signal-desktop); APP_NAME=(Boxes Signal)
+        APP_DESKTOPS=(org.gnome.Boxes signal-desktop,Signal); APP_EXEC=("" ""); SELECTED=(0 1); WITH_DATA=true
+        package_wants_links() { :; }; collect_leftovers
+        for j in "${!LEFT_PATH[@]}"; do echo "${LEFT_PATH[j]}=${LEFT_ON[j]}"; done'
+    [[ "$output" == *"$HOME/.local/share/gnome-boxes=false"* ]] || { echo "$output"; return 1; }
+    [[ "$output" == *"$HOME/.config/Signal=false"* ]]
+}
+
+@test "inventory and leftover path overrides in the environment are ignored outside the tests' own assignments" {
+    mkdir -p "$TEST_ROOT/apps" "$TEST_ROOT/db"
+    MOLE_SYS_APPS_DIR="$TEST_ROOT/apps" MOLE_SNAP_DESKTOP_DIR="$TEST_ROOT/apps" MOLE_SNAP_SNAPS_DIR="$TEST_ROOT/apps" \
+        MOLE_PACMAN_DBPATH="$TEST_ROOT/db" mole_run uninstall '
+        echo "apps=$MOLE_SYS_APPS_DIR snapdesk=$MOLE_SNAP_DESKTOP_DIR snaps=$MOLE_SNAP_SNAPS_DIR db=$MOLE_PACMAN_DBPATH"'
+    [ "$output" = "apps=/usr/share/applications snapdesk=/var/lib/snapd/desktop/applications snaps=/var/lib/snapd/snaps db=/var/lib/pacman" ]
+    MOLE_DOCKER_SYSTEM_SOCKETS="$TEST_ROOT/x.sock" APT_ARCHIVES_DIR="$TEST_ROOT/apt" SNAPD_SNAPS_DIR="$TEST_ROOT/snaps" \
+        mole_run clean 'echo "docker=$MOLE_DOCKER_SYSTEM_SOCKETS apt=$APT_ARCHIVES_DIR snaps=$SNAPD_SNAPS_DIR"'
+    [ "$output" = "docker=/var/run/docker.sock /run/docker.sock apt=/var/cache/apt/archives snaps=/var/lib/snapd/snaps" ]
+}

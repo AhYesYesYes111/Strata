@@ -58,7 +58,10 @@ final class StrataAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         menuBar = StrataMenuBar(onOpenStatus: workspace.showStatus)
+        FineTuneConnection.shared.start()
     }
+
+    func applicationWillTerminate(_ notification: Notification) { FineTuneConnection.shared.stop() }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
@@ -109,11 +112,13 @@ final class StrataMenuBar: NSObject, NSPopoverDelegate {
 
     func popoverWillShow(_ notification: Notification) {
         MonitorSession.shared.startMenu()
+        FineTuneConnection.shared.setMenuVisible(true)
         item.button?.highlight(true)
     }
 
     func popoverDidClose(_ notification: Notification) {
         MonitorSession.shared.stopMenu()
+        FineTuneConnection.shared.setMenuVisible(false)
         item.button?.highlight(false)
         popover.contentViewController = nil
     }
@@ -133,7 +138,7 @@ private struct MenuPopoverView: View {
 
     var body: some View {
         ScrollView {
-            MenuDashboard(readings: monitor.readings, processes: monitor.processes,
+            MenuDashboard(readings: monitor.readings,
                           onOpenStatus: onOpenStatus, onQuit: { NSApp.terminate(nil) })
                 .background(GeometryReader { geometry in
                     Color.clear.preference(key: MenuContentHeight.self, value: geometry.size.height)

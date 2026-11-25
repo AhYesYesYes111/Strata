@@ -13,7 +13,6 @@ cases = {
     "HardwareCounterTests": ["HardwareTelemetry"],
     "ProcessMonitorTests": ["ProcessMonitor", "Localization", "Design", "ContourMark"],
     "StatusVitalsTests": ["StatusVitals", "Localization"],
-    "MenuActivityTests": ["MenuActivityFooter", "Design", "ContourMark", "Localization"],
     "MonitorSessionTests": ["MonitorSession", "StatusPage", "ProcessMonitor", "HardwareTelemetry",
                             "StatusVitals", "LinkQuality", "Design", "Localization", "ContourMark"],
 }

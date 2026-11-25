@@ -8,7 +8,7 @@ Strata 是一款原生 macOS 应用。你可以看清哪些文件夹占用了磁
 
 ## 构建 Strata
 
-应用支持 **macOS 13 及以上版本**。从源码构建需要 **Python 3** 和 **包含 macOS 26 或更新版 SDK 的 Apple 开发工具**。
+应用支持 **macOS 13 及以上版本**。从源码构建需要 **Python 3** 和 **包含 macOS 26 或更新版 SDK 的完整 Xcode**。
 
 ```sh
 git clone https://github.com/AhYesYesYes111/Strata.git
@@ -17,7 +17,7 @@ python3 native/MoleDesktop/build.py
 open native/MoleDesktop/build/Strata.app
 ```
 
-如果已克隆仓库，在仓库根目录运行最后两条命令即可。脚本会按当前 Mac 的架构构建应用，进行本地签名，并生成 `native/MoleDesktop/build/Strata.zip`。
+默认构建会从本仓库的 FineTune 源码编译音频组件，将它嵌入 Strata 并进行本地签名，同时生成 `native/MoleDesktop/build/Strata.zip`。音频控制需要 macOS 15.4 或更新版本。首次构建时 Xcode 会获取锁定版本的 Swift 包，只构建磁盘工具可加 `--without-finetune`。
 
 ## 使用 Strata
 
@@ -35,7 +35,9 @@ open native/MoleDesktop/build/Strata.app
 
 ## 上游 Mole CLI
 
-Strata 内置了 Mole CLI 的清理和维护脚本。Mole CLI 是由 tw93 和贡献者维护的命令行工具。上游也发布了自己的桌面应用 Mole Mac。[Mole CLI 源码](https://github.com/tw93/Mole) · [Mole Mac](https://mole.fit/)
+仓库包含 FineTune 完整 Xcode 工程，以及 Mole 的 macOS、Linux 和 Windows 源码、测试与打包脚本。在 macOS 或 Linux 上可从仓库根目录运行 `./mo --help`。Windows 的入口是 `components/Mole/windows/mole.ps1`。各平台的构建命令和源码位置见[组件指南](components/README.md)。
+
+Strata 桌面应用内置了 Mole CLI 的清理和维护脚本。Mole CLI 是由 tw93 和贡献者维护的命令行工具。上游也发布了自己的桌面应用 Mole Mac。[Mole CLI 源码](https://github.com/tw93/Mole) · [Mole Mac](https://mole.fit/)
 
 ## 开源协议
 

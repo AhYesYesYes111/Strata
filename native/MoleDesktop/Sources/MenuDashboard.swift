@@ -2,12 +2,10 @@ import SwiftUI
 
 struct MenuDashboard: View {
     let readings: StatusReadings
-    let processes: [ProcessReading]
     let onOpenStatus: () -> Void
     let onQuit: () -> Void
 
     @Environment(\.locale) private var locale
-    @State private var rankByCPU = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -18,8 +16,7 @@ struct MenuDashboard: View {
                 GridRow { network; fan }
             }
             battery
-            processTable
-            MenuActivityFooter()
+            FineTuneCard().menuSurface()
             HStack {
                 Spacer()
                 Button(action: onQuit) {
@@ -215,57 +212,6 @@ struct MenuDashboard: View {
         .menuSurface()
     }
 
-    private var processTable: some View {
-        let top = processes.sorted { lhs, rhs in
-            if rankByCPU, lhs.cpu != rhs.cpu { return (lhs.cpu ?? -1) > (rhs.cpu ?? -1) }
-            if lhs.memory != rhs.memory { return lhs.memory > rhs.memory }
-            return lhs.id.pid < rhs.id.pid
-        }.prefix(5)
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text(tr("主要进程", "Top processes")).font(.system(size: 11, weight: .semibold))
-                Spacer(minLength: 3)
-                sortButton(tr("内存", "Memory"), cpu: false, width: 69)
-                sortButton("CPU", cpu: true, width: 53)
-            }
-            Divider().overlay(StrataColor.border)
-            if top.isEmpty {
-                Text(tr("暂无进程数据", "No process readings yet"))
-                    .font(.caption).foregroundStyle(StrataColor.muted).padding(.vertical, 5)
-            } else {
-                ForEach(top) { row in
-                    HStack(spacing: 6) {
-                        Text(row.name).lineLimit(1).truncationMode(.middle)
-                        Spacer(minLength: 1)
-                        Text(storageSize(row.memory)).foregroundStyle(StrataColor.muted)
-                            .frame(width: 69, alignment: .trailing)
-                            .help(row.isResidentSize ? tr("驻留内存", "Resident memory") : tr("内存占用", "Memory footprint"))
-                        Text(row.cpu.map { $0.formatted(.number.locale(locale).precision(.fractionLength(1))) + "%" } ?? "—")
-                            .foregroundStyle((row.cpu ?? 0) >= 100 ? amber : StrataColor.muted)
-                            .frame(width: 53, alignment: .trailing)
-                    }
-                    .font(.system(size: 11)).monospacedDigit()
-                    .lineLimit(1).minimumScaleFactor(0.84)
-                    .accessibilityElement(children: .combine)
-                }
-            }
-        }.menuSurface()
-    }
-
-    private func sortButton(_ text: String, cpu: Bool, width: CGFloat) -> some View {
-        Button { rankByCPU = cpu } label: {
-            HStack(spacing: 3) {
-                if rankByCPU == cpu { Image(systemName: "arrow.down").font(.system(size: 8, weight: .bold)) }
-                Text(text)
-            }
-            .frame(width: width, alignment: .trailing).contentShape(Rectangle())
-        }
-        .font(.system(size: 10, weight: .semibold))
-        .foregroundStyle(rankByCPU == cpu ? StrataColor.accent : StrataColor.muted)
-        .buttonStyle(.plain)
-        .help(tr("按" + text + "排序", "Rank by " + text))
-        .accessibilityAddTraits(rankByCPU == cpu ? .isSelected : [])
-    }
 }
 
 private struct MenuMetricTitle: View {

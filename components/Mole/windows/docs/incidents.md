@@ -1,0 +1,59 @@
+# Incidents
+
+Defects that reached a user or a published Mole CLI (Windows) release, kept as the eval set for every review layer
+("incidents are the eval"). A row is added in the same change that fixes the defect: the fix commit, the commit that
+introduced it when confirmed, the earliest layer that should have caught it, and the test that catches it now.
+`Reported` is the issue or PR date, or the fix date when nothing was filed. `scripts/check_incidents.py` (run by the
+Check workflow) fails a row whose commit does not resolve, whose layer is not one of the names below, or whose
+catcher is not defined in the code.
+
+A catcher is written in backticks exactly as the code names it: a Pester `It` name as written in `tests/*.ps1`
+(a template such as `Never offers <_>` included), a Go `Test...` function under `cmd/`, a Python `test_...` method
+under `tests/`, or a PowerShell function for a source gate.
+
+Layers, earliest first:
+
+- `write-time`: the author's own check before committing (a grep of same-shape sites, a dry run).
+- `unit`: `scripts/test.ps1` (Pester under Windows PowerShell 5.1 and pwsh 7, `go test ./cmd/...`) and the Python
+  tests, as the Validation workflow runs them.
+- `lint`: the Check workflow (gofmt, golangci-lint, the PowerShell parse under Windows PowerShell 5.1).
+- `review`: a diff review or security audit before merging.
+- `e2e`: `scripts/e2e_windows.py` against the Parallels VM and the x64 ThinkPad.
+- `release`: building, signing and package-manager validation of the release assets (`RELEASE.md`).
+- `field`: only a real user's machine, network or policy shows it.
+
+When a review prompt or its model changes, rerun it on the files each fix touched as they were at `<Fixed>^` and
+record which rows it finds.
+
+## Incidents
+
+| ID | Reported | Symptom | Introduced | Fixed | Layer | Caught by |
+|---|---|---|---|---|---|---|
+| I-01 | 2026-10-11 | A dry-run `mo uninstall` still ran msiexec, each app's uninstaller and Remove-AppxPackage | unknown | 01e7940f | unit | `Runs no uninstaller for MSI, EXE or Store apps` |
+| I-02 | 2026-10-11 | winget's archive scan rejected the signed release zip, whose entry names used backslashes | 07e2fc1a | 611069e5 | release | `Stores entry names with forward slashes, as winget's archive check requires`, `Is the only way the release scripts build a zip` |
+| I-03 | 2026-10-12 | An elevated `mo optimize` reset Winsock and deleted the Windows Search index without asking | unknown | 721d18f5 | review | `Never resets Winsock or rebuilds search, icon, font or Store caches when elevated` |
+| I-04 | 2026-10-12 | Default `mo clean` rows emptied Zoom's chat database, Teams storage and Recent items as caches | unknown | 73be7858 | review | `Never offers <_>` |
+| I-05 | 2026-10-13 | A fresh script install could not fetch the status and analyze tools once api.github.com rate-limited a shared IP | unknown | 5914ebeb | field | `Downloads the checksum and binary from the release URLs, not the API` |
+| I-06 | 2026-10-13 | Install and `mo update` failed at git clone on a PC that reaches GitHub only through the system proxy | unknown | 3cdfeb71 | field | `Passes the system proxy to git when GitHub goes through it` |
+| I-07 | 2026-10-15 | `mo update` started from a PowerShell 7 terminal could not refresh analyze and status | unknown | f8803958 | field | `Verifies the checksum without Get-FileHash (#1744)`, `Drops PowerShell 7 module folders inherited by Windows PowerShell and keeps the rest` |
+| I-08 | 2026-10-18 | The uninstall menu crashed under Windows PowerShell 5.1 when a search matched exactly one app | unknown | 0e9d06b4 | unit | `selects the only app a search matches` |
+| I-09 | 2026-10-26 | `mo.exe` could not run any command where policy blocks powershell.exe | e8fd407d | a56c6a40 | field | `TestRunPowerShellFallsBackWhenTheFirstHostCannotStart` |
+| I-10 | 2026-10-09 | `mo analyze C:\` reported 101 GB of 830 GB used: directory sizes stopped three levels deep and skipped folders whose names start with a dot | 3653900e | 4a9838af | unit | `TestDirectorySizesCountDeepAndHiddenDirs` |
+| I-11 | 2026-10-30 | The developer-tools cleanup reached six VS Code cache leaves without the owner checks used by the app-cache entry, allowing an active editor's cache to be removed | unknown | 3d2db78f | review | `Keeps both VS Code cleanup entries guarded for <Owner> in preview <Preview>` |
+| I-12 | 2026-10-30 | Self-removal could traverse a junction in an ancestor of the cache root and remove cache contents at the redirected destination | unknown | 3d2db78f | unit | `Keeps the cache when its ancestor is a junction` |
+| I-13 | 2026-10-30 | Bun cache cleanup removed the default cache directly without checking running owners or the root configured by Bun | unknown | 3d2db78f | review | `Keeps an unavailable Bun cache for a running or unknown owner: <Owner>`, `Uses the configured Bun root and never falls back after a failed owner command`, `Keeps the default Bun cache when a usable owner returns an unknown root`, `Previews the configured Bun root without starting cleanup`, `Rechecks Bun activity before its owner command` |
+| I-14 | 2026-10-30 | Automatic update lookup still launched Windows PowerShell when policy blocked it, even after the native launcher successfully fell back to PowerShell 7 | 59664dca | 3d2db78f | review | `Starts update lookup with the current PowerShell host` |
+| I-15 | 2026-11-01 | Shared Adobe media and peak caches could be cleaned while an owning video application was running or its process inventory was unknown | unknown | 673a7deb | review | `Keeps Adobe media caches for <Owner> in preview <Preview>`, `Rechecks Adobe owners after sizing in preview <Preview>` |
+| I-16 | 2026-11-01 | Yarn Berry runtime dependency archives were not protected from shared clean sinks and parent sweeps | unknown | 673a7deb | review | `Keeps Yarn Berry dependencies beside the idle Classic cache`, `Protects named Berry stores at the shared clean sink including parent sweeps` |
+| I-17 | 2026-11-02 | The quick installer selected a policy-blocked powershell.exe and never reached install.ps1; generated launchers and the shortcut embedded the same executable | 982aa6ec | eb8f6e84 | field | `Uses the PowerShell host that ran the installer`, `Runs install.ps1 with the PowerShell host that is already running` |
+| I-18 | 2026-11-04 | On a zh-CN Windows `mo optimize` logged every clean `sfc /scannow` as `FAILED` with "result not read", because only sfc.exe's English summary was matched (#1915) | 65373836 | 70970233 | field | `Records a localized clean scan as optimized from CBS.log`, `Reads <Expect> from [SR] lines` |
+| I-19 | 2026-11-04 | `mo status` shortened process names by bytes while its callers pass a display width, so a Korean, accented or curly-apostrophe name was cut while it still fit and a cut could split a UTF-8 rune; Mole CLI (macOS) found it first (tw93/Mole#1917) | unknown | 13b79edc | unit | `TestShorten` |
+| I-20 | 2026-11-08 | A `purge_paths.txt` that existed but could not be read counted as empty, so `mo purge` silently scanned the default folders instead of the configured ones, and the router dropped purge's exit status | unknown | e5f89c83 | review | `stops on a config it cannot read instead of scanning the default paths`, `Returns the purge result as the exit code` |
+| I-21 | 2026-11-09 | A first `mo uninstall` move into an empty Recycle Bin left the desktop icon empty until the shell next refreshed it, the same gap Mole for Windows met on 2026-11-02 | unknown | c257050f | write-time | `Refreshes the desktop bin icon once a move has completed` |
+| I-22 | 2026-11-09 | In a shell that could not write Mole's own state (an agent sandbox, a read-only profile), `mo clean --dry-run` and `mo uninstall --list` stopped on writing the preview list and the app scan cache, and on a first run even `mo --version` and `mo optimize --dry-run` failed creating the config directory; the dry-run summary also named a list file that was never written | unknown | 16eaba98 | write-time | `Completes mo <Name> on a <State> run`, `Names the preview list only when it was written` |
+| I-23 | 2026-11-09 | A real `mo clean` in a shell that could not write, such as an agent's sandbox, had every delete denied and still ended on "System was already clean" with exit 0; Mole CLI (macOS) met the same | unknown | 3cd63f92 | e2e | `Refuses when every checked folder refuses a write`, `Returns the clean result as the exit code` |
+| I-24 | 2026-11-09 | `mo purge` offered and removed a build folder a running process still held, leaving it partly deleted; Mole CLI (macOS) met the same in #1958 | unknown | 659bc206 | review | `a working directory inside the folder keeps it, even nested`, `a library loaded from the folder keeps it after its file handle closed`, `a real run with every artifact in use says so instead of finding nothing` |
+| I-25 | 2026-11-11 | Updating an existing source install through `quick-install.ps1` in Windows PowerShell 5.1 stopped with "Installation failed: From https://github.com/tw93/Mole", and reinstalling hit the same path because the source folder stays | 92b19729 | 8b43e8d8 | write-time | `Defines Invoke-GitCommand the same way in both scripts`, `Returns git's exit code instead of throwing on its stderr progress in <_>` |
+| I-26 | 2026-11-12 | After `cmd/status` and `cmd/analyze` changed past V1.44.0-windows, a fresh `quick-install.ps1` on a PC without Go installed neither `status.exe` nor `analyze.exe`, and `mo status` said to check the network | 10334ee2 | ead9c74d | write-time | `Uses the verified release build for missing <_> when only upstream commits changed it`, `Offers the tags in HEAD history newest first, and none for local edits, a HEAD beside the tags or a Git override` |
+| I-27 | 2026-11-12 | Once `cmd/` changed after a release, `mo update` on a source install without Go stopped with "Could not refresh ... Install Go and rerun this installer", and a fresh install after a version bump whose release was not out yet got no `status.exe` or `analyze.exe` | 59b3bcc4 | f9603ca4 | write-time | `Refreshes both tools from the release build without Go when the source is ahead of it`, `Tries the previous release when the newest one is not published yet` |
+| I-28 | 2026-11-17 | Every `mo` command from the `mo.exe` launcher failed with "The string is missing the terminator" when the path to `mole.ps1` held a curly quote, such as a profile named `John O’Brien` (#2021) | e8fd407d | 1953a0c2 | unit | `TestCommandLineDoublesTypographicQuotes` |
