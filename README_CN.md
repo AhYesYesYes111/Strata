@@ -19,6 +19,8 @@ open native/MoleDesktop/build/Strata.app
 
 默认构建会从本仓库的 FineTune 源码编译音频组件，将它嵌入 Strata 并进行本地签名，同时生成 `native/MoleDesktop/build/Strata.zip`。音频控制需要 macOS 15.4 或更新版本。首次构建时 Xcode 会获取锁定版本的 Swift 包，只构建磁盘工具可加 `--without-finetune`。
 
+如果仓库位于 iCloud 等同步目录，构建脚本可能会提示使用 ZIP。请把 `Strata.zip` 解压到本机的非同步目录后运行，或用 `--output-dir` 指定本地构建目录。
+
 ## 使用 Strata
 
 | 页面 | 可以做什么 |

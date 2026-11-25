@@ -19,6 +19,8 @@ open native/MoleDesktop/build/Strata.app
 
 The default build compiles FineTune from this repository, embeds it in the locally signed app, and writes `native/MoleDesktop/build/Strata.zip`. Audio controls require macOS 15.4 or later. Xcode resolves the pinned Swift packages on the first build. Pass `--without-finetune` for a disk-tools-only build.
 
+If the checkout is in a synced folder, the build may direct you to the ZIP. Extract it to a local folder before opening the app, or choose a local build directory with `--output-dir`.
+
 ## Using Strata
 
 | View | What you can do |

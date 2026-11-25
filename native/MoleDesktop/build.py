@@ -11,8 +11,6 @@ import tempfile
 
 project = Path(__file__).resolve().parent
 repo = project.parent.parent
-output = project / "build"
-destination = output / "Strata.app"
 bundle_id = "local.strata.DiskWorkspace"
 
 usage_descriptions = {
@@ -74,10 +72,12 @@ def validate_companion(app):
             raise ValueError("This ad-hoc hardened FineTune links Sparkle. Use FineTune's scripts/build-strata-companion.py.")
 
 
-def build(finetune_app=None, *, without_finetune=False, finetune_packages=None):
+def build(finetune_app=None, *, without_finetune=False, finetune_packages=None, output=project / "build"):
     if finetune_app:
         validate_companion(finetune_app)
-    output.mkdir(exist_ok=True)
+    output = output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    destination = output / "Strata.app"
     if destination.exists():
         with (destination / "Contents/Info.plist").open("rb") as info:
             if destination.is_symlink() or plistlib.load(info).get("CFBundleIdentifier") != bundle_id:
@@ -165,7 +165,19 @@ def build(finetune_app=None, *, without_finetune=False, finetune_packages=None):
                 if previous.exists():
                     previous.rename(destination)
                 raise
-    print(destination)
+    # File Provider can reattach Finder metadata as soon as the bundle is published.
+    verified = subprocess.run(["codesign", "--verify", "--deep", "--strict", destination],
+                              capture_output=True, text=True)
+    if verified.returncode:
+        if "resource fork, Finder information, or similar detritus" not in verified.stderr:
+            raise RuntimeError(verified.stderr.strip())
+        with tempfile.TemporaryDirectory(prefix="strata-verify-") as temp:
+            run("/usr/bin/ditto", "-x", "-k", output / "Strata.zip", temp)
+            run("codesign", "--verify", "--deep", "--strict", Path(temp) / "Strata.app")
+        print("The output folder added Finder metadata. Extract the verified ZIP in a local folder.")
+        print(output / "Strata.zip")
+    else:
+        print(destination)
 
 
 if __name__ == "__main__":
@@ -174,5 +186,7 @@ if __name__ == "__main__":
     mixer.add_argument("--without-finetune", action="store_true", help="Build the desktop app without the audio companion.")
     mixer.add_argument("--finetune-app", type=Path, help="Use a prebuilt signed FineTune companion.")
     mixer.add_argument("--finetune-packages", type=Path, help="Reuse a local Xcode SourcePackages cache for the companion build.")
+    parser.add_argument("--output-dir", type=Path, default=project / "build", help="Set the build and archive directory.")
     args = parser.parse_args()
-    build(args.finetune_app, without_finetune=args.without_finetune, finetune_packages=args.finetune_packages)
+    build(args.finetune_app, without_finetune=args.without_finetune,
+          finetune_packages=args.finetune_packages, output=args.output_dir)

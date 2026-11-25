@@ -15,6 +15,8 @@ open native/MoleDesktop/build/Strata.app
 
 默认构建会从仓库内的 `components/FineTune` 编译并嵌入音频组件，需要完整 Xcode。首次构建时 Xcode 会获取锁定版本的依赖。已有 Xcode 的 SourcePackages 缓存时可传 `--finetune-packages /path/to/SourcePackages`。也可用 `--finetune-app /path/to/FineTune.app` 嵌入预编译的兼容版本，或用 `--without-finetune` 仅构建磁盘工具。音频控制需要 macOS 15.4 或更新版本。
 
+同步盘可能给解压后的应用附加 Finder 元数据。如果构建脚本提示使用 ZIP，请把 `Strata.zip` 解压到非同步目录后打开。也可以在构建时用 `--output-dir` 直接选定本地目录。
+
 ## 使用
 
 右上角的语言按钮可选择简体中文、English 或跟随系统。语言选择会保存，切换时可留在当前目录或保留本次扫描和筛选。报告中的原始 Mole 运行记录及文件路径按原文显示。
