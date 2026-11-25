@@ -1,0 +1,25 @@
+name: Strata
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      MOLE_TEST_NO_AUTH: "1"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Test the desktop app
+        run: |
+          python3 native/MoleDesktop/Tests/test_cleanup.py
+          python3 native/MoleDesktop/Tests/test_monitoring.py
+      - name: Test cleanup protections
+        run: |
+          brew install bats-core coreutils
+          bats tests/strata_cleanup_privacy.bats
+      - name: Build Strata
+        run: python3 native/MoleDesktop/build.py
