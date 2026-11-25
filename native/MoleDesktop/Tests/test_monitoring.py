@@ -8,6 +8,13 @@ import tempfile
 tests = Path(__file__).resolve().parent
 sources = tests.parent / "Sources"
 cases = {
+    "VolumeWheelTests": ["VolumeWheelInput", "ScrollWheelStep"],
+    "MenuViewportTests": ["MenuDashboard", "VolumeWheelInput", "ScrollWheelStep", "FineTuneCard", "FineTuneConnection",
+                          "FineTuneSocket", "MonitorSession", "StatusPage", "ProcessMonitor", "HardwareTelemetry",
+                          "StatusVitals", "LinkQuality", "Design", "Localization", "ContourMark"],
+    "ContourGeometryTests": ["ContourArtwork", "ContourMark"],
+    "MixerDiscoveryTests": ["FineTuneConnection", "FineTuneSocket", "Localization"],
+    "ApplicationSizeTests": ["ToolsPages", "DiskScanner", "Localization", "Design", "ContourMark"],
     "WholeDiskTests": ["DiskScanner", "DiskSnapshots", "AnalyzePage", "TreemapLayout", "Localization", "Design", "ContourMark"],
     "TreemapTests": ["DiskScanner", "DiskSnapshots", "AnalyzePage", "TreemapLayout", "Localization", "Design", "ContourMark"],
     "HardwareCounterTests": ["HardwareTelemetry"],

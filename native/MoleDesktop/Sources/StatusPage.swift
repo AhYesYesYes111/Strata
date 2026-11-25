@@ -257,7 +257,7 @@ struct StatusReadings {
         trend = history
     }
 
-    mutating func sample() {
+    mutating func sample(hardware sampler: HardwareSampler) {
         let now = Date()
         if lastCapacity == nil { chip = chipName() }
         let elapsed = trend.samples.last.map { now.timeIntervalSince($0.date) } ?? 0
@@ -273,7 +273,7 @@ struct StatusReadings {
         }
         warmingUp = current != nil && cpu == nil
         cores = current
-        let hardware = HardwareTelemetry.read()
+        let hardware = sampler.read()
         diskIO = continuous ? hardware.diskRates(since: sensors) : nil
         gpuWatts = continuous ? hardware.gpuPower(since: sensors) : nil
         sensors = hardware
@@ -644,13 +644,14 @@ struct StatusBoard: View {
     }
 
     private var overview: some View {
-        StatusTile(tint: jade) {
+        let health = readings.health
+        return StatusTile(tint: jade) {
             VStack(alignment: .leading, spacing: 4) {
                 headline(tr("健康", "Health"), "sun.max", color: jade, badge: readings.chip)
                 Spacer(minLength: 1)
                 VStack(alignment: .leading, spacing: 2) {
-                    metricValue(readings.health.map { String($0.score) } ?? "—", unit: readings.health?.label ?? "")
-                    caption(readings.health?.cause.label ?? tr("正在采样…", "Sampling…"))
+                    metricValue(health.map { String($0.score) } ?? "—", unit: health?.label ?? "")
+                    caption(health?.cause.label ?? tr("正在采样…", "Sampling…"))
                 }
                 Spacer(minLength: 1)
                 caption(tr("运行 ", "Up ") + statusUptime(readings.uptime) + " · " + thermalDescription)

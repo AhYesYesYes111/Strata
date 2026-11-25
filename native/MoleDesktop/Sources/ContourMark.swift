@@ -2,6 +2,8 @@ import CoreGraphics
 import Foundation
 
 enum ContourMark {
+    static let angles = (0..<120).map { 2 * Double.pi * Double($0) / 120 }
+
     static func point(angle: Double, level: Double, in rect: CGRect) -> CGPoint {
         let shape = min(1, level)
         let ridge = 1 + 0.13 * sin(3 * angle + 0.7 + 0.5 * shape) + 0.055 * cos(5 * angle - shape)
@@ -10,14 +12,10 @@ enum ContourMark {
                        y: rect.midY + rect.height * (0.43 * scale * sin(angle) + 0.08 * (1 - shape) - 0.11 * scale * cos(angle)))
     }
 
-    static func path(level: Double, in rect: CGRect, offset: (Double) -> Double = { _ in 0 }) -> CGPath {
+    private static func path(level: Double, in rect: CGRect) -> CGPath {
         let path = CGMutablePath()
-        for sample in 0..<120 {
-            let angle = 2 * Double.pi * Double(sample) / 120
-            var vertex = point(angle: angle, level: level, in: rect)
-            let displacement = offset(angle)
-            vertex.x += cos(angle) * displacement
-            vertex.y += sin(angle) * displacement
+        for (sample, angle) in angles.enumerated() {
+            let vertex = point(angle: angle, level: level, in: rect)
             if sample == 0 { path.move(to: vertex) } else { path.addLine(to: vertex) }
         }
         path.closeSubpath()

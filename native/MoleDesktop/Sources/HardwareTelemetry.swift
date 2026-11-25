@@ -21,25 +21,6 @@ struct HardwareTelemetry {
     fileprivate var disk: StorageCounters?
     fileprivate var energy: GPUEnergyReading?
 
-    static func read() -> Self {
-        var result = Self()
-        if let gpu = Registry.service("IOAccelerator") {
-            defer { IOObjectRelease(gpu) }
-            let stats = Registry.value(gpu, "PerformanceStatistics") as? [String: Any]
-            if let percent = (stats?["Device Utilization %"] as? NSNumber)?.doubleValue,
-               (0...100).contains(percent) { result.gpuPercent = percent }
-            result.gpuCores = (Registry.value(gpu, "gpu-core-count") as? NSNumber)?.intValue
-        }
-        if let battery = Registry.service("AppleSmartBattery") {
-            defer { IOObjectRelease(battery) }
-            result.readBattery(battery)
-        }
-        if let controller = SMCReader() { controller.sample(into: &result) }
-        result.disk = StorageCounters.read()
-        result.energy = GPUReport.functions?.sample()
-        return result
-    }
-
     func diskRates(since previous: Self) -> (read: Double, write: Double)? {
         guard let current = disk, let past = previous.disk else { return nil }
         return current.rates(since: past)
@@ -50,7 +31,7 @@ struct HardwareTelemetry {
         return current.watts(since: past)
     }
 
-    private mutating func readBattery(_ entry: io_service_t) {
+    fileprivate mutating func readBattery(_ entry: io_service_t) {
         func number(_ key: String) -> NSNumber? { Registry.value(entry, key) as? NSNumber }
         batteryCycles = number("CycleCount")?.intValue
         batteryHealthPercent = BatteryHealthCache.shared.latest()
@@ -70,6 +51,38 @@ struct HardwareTelemetry {
             batteryMinutes = number("AvgTimeToEmpty")?.intValue ?? number("TimeRemaining")?.intValue
         }
         if let minutes = batteryMinutes, !(1..<14400).contains(minutes) { batteryMinutes = nil }
+    }
+}
+
+/// The status sampler owns these handles only while a monitoring surface is visible.
+final class HardwareSampler {
+    private var controller: SMCReader?
+    private var gpuSubscription: GPUReport.Subscription?
+    private let storage = StorageReader()
+
+    func read() -> HardwareTelemetry {
+        var result = HardwareTelemetry()
+        if let gpu = Registry.service("IOAccelerator") {
+            defer { IOObjectRelease(gpu) }
+            let stats = Registry.value(gpu, "PerformanceStatistics") as? [String: Any]
+            if let percent = (stats?["Device Utilization %"] as? NSNumber)?.doubleValue,
+               (0...100).contains(percent) { result.gpuPercent = percent }
+            result.gpuCores = (Registry.value(gpu, "gpu-core-count") as? NSNumber)?.intValue
+        }
+        if let battery = Registry.service("AppleSmartBattery") {
+            defer { IOObjectRelease(battery) }
+            result.readBattery(battery)
+        }
+        if controller == nil { controller = SMCReader() }
+        controller?.sample(into: &result)
+        if controller?.disconnected == true { controller = nil }
+        result.disk = storage.read()
+        if gpuSubscription == nil { gpuSubscription = GPUReport.functions?.openSubscription() }
+        if let gpuSubscription {
+            result.energy = GPUReport.functions?.sample(gpuSubscription)
+            if result.energy == nil { self.gpuSubscription = nil }
+        }
+        return result
     }
 }
 
@@ -95,11 +108,23 @@ struct StorageCounters {
               read >= previous.read, written >= previous.written else { return nil }
         return (Double(read - previous.read) / duration, Double(written - previous.written) / duration)
     }
+}
 
-    static func read() -> Self? {
+private final class StorageReader {
+    private var mountSource: String?
+    private var driver: io_registry_entry_t = 0
+
+    deinit { if driver != 0 { IOObjectRelease(driver) } }
+
+    func read() -> StorageCounters? {
         var fs = statfs()
         guard statfs("/System/Volumes/Data", &fs) == 0 else { return nil }
         let source = withUnsafeBytes(of: &fs.f_mntfromname) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
+        if mountSource == source, driver != 0, let counters = readDriver() { return counters }
+
+        if driver != 0 { IOObjectRelease(driver) }
+        driver = 0
+        mountSource = source
         guard source.hasPrefix("/dev/"), let match = IOBSDNameMatching(kIOMainPortDefault, 0, String(source.dropFirst(5))) else { return nil }
         var entry = IOServiceGetMatchingService(kIOMainPortDefault, match)
         guard entry != 0 else { return nil }
@@ -108,11 +133,9 @@ struct StorageCounters {
         // images have their own counters and must not inflate this card's rates.
         for _ in 0..<48 {
             if IOObjectConformsTo(entry, "IOBlockStorageDriver") != 0 {
-                var id: UInt64 = 0
-                guard IORegistryEntryGetRegistryEntryID(entry, &id) == KERN_SUCCESS,
-                      let stats = Registry.value(entry, "Statistics") as? [String: Any],
-                      let read = stats["Bytes (Read)"] as? NSNumber, let written = stats["Bytes (Write)"] as? NSNumber else { return nil }
-                return Self(driver: id, read: read.uint64Value, written: written.uint64Value, time: ProcessInfo.processInfo.systemUptime)
+                IOObjectRetain(entry)
+                driver = entry
+                return readDriver()
             }
             var parent: io_registry_entry_t = 0
             guard IORegistryEntryGetParentEntry(entry, kIOServicePlane, &parent) == KERN_SUCCESS else { return nil }
@@ -120,6 +143,16 @@ struct StorageCounters {
             entry = parent
         }
         return nil
+    }
+
+    private func readDriver() -> StorageCounters? {
+        var id: UInt64 = 0
+        guard IORegistryEntryGetRegistryEntryID(driver, &id) == KERN_SUCCESS,
+              let stats = Registry.value(driver, "Statistics") as? [String: Any],
+              let read = stats["Bytes (Read)"] as? NSNumber,
+              let written = stats["Bytes (Write)"] as? NSNumber else { return nil }
+        return StorageCounters(driver: id, read: read.uint64Value, written: written.uint64Value,
+                               time: ProcessInfo.processInfo.systemUptime)
     }
 }
 
@@ -185,6 +218,8 @@ private final class BatteryHealthCache: @unchecked Sendable {
 /// on Intel and ARM. The only operations used here are key information (9) and read (5).
 private final class SMCReader {
     private var connection: io_connect_t = 0
+    private var formats: [UInt32: (size: UInt32, type: UInt32)] = [:]
+    private(set) var disconnected = false
 
     init?() {
         guard let service = Registry.service("AppleSMC") else { return nil }
@@ -206,17 +241,32 @@ private final class SMCReader {
         let status = request.withUnsafeBytes { input in reply.withUnsafeMutableBytes { output in
             IOConnectCallStructMethod(connection, 2, input.baseAddress, input.count, output.baseAddress, &received)
         } }
-        guard status == KERN_SUCCESS, received == 80, reply[40] == 0 else { return nil }
+        guard status == KERN_SUCCESS else {
+            disconnected = true
+            return nil
+        }
+        guard received == 80, reply[40] == 0 else { return nil }
         return reply
     }
 
     private func value(_ name: String) -> Double? {
         let key = name.utf8.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
-        guard let info = call(key: key, command: 9) else { return nil }
-        let size = info.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 28, as: UInt32.self) }
-        let type = info.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 32, as: UInt32.self) }
-        guard (1...32).contains(size), let result = call(key: key, command: 5, size: size) else { return nil }
-        switch (type,size) {
+        let format: (size: UInt32, type: UInt32)
+        if let cached = formats[key] {
+            format = cached
+        } else {
+            guard let info = call(key: key, command: 9) else { return nil }
+            format = info.withUnsafeBytes {
+                ($0.loadUnaligned(fromByteOffset: 28, as: UInt32.self), $0.loadUnaligned(fromByteOffset: 32, as: UInt32.self))
+            }
+            guard (1...32).contains(format.size) else { return nil }
+            formats[key] = format
+        }
+        guard let result = call(key: key, command: 5, size: format.size) else {
+            formats.removeValue(forKey: key)
+            return nil
+        }
+        switch (format.type, format.size) {
         case (0x666c7420,4): // flt
             return Double(result.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 48, as: Float.self) })
         case (0x73703738,2): // sp78
@@ -296,8 +346,7 @@ struct GPUEnergyReading {
     }
 }
 
-/// Resolve the optional IOReport interface once. A snapshot opens a short-lived
-/// subscription for the energy group only; the machine-wide counters persist across it.
+/// Resolve the optional IOReport interface once. Each active sampler owns its subscription.
 private struct GPUReport {
     private typealias Channels = @convention(c) (CFString?, CFString?, UInt64, UInt64, UInt64) -> Unmanaged<CFDictionary>?
     private typealias Subscribe = @convention(c) (CFAllocator?, CFDictionary, UnsafeMutablePointer<Unmanaged<CFDictionary>?>, UInt64, CFTypeRef?) -> Unmanaged<CFTypeRef>?
@@ -336,11 +385,20 @@ private struct GPUReport {
         self.count = count
     }
 
-    func sample() -> GPUEnergyReading? {
+    struct Subscription {
+        let handle: CFTypeRef
+        let channels: CFDictionary
+    }
+
+    func openSubscription() -> Subscription? {
         var accepted: Unmanaged<CFDictionary>?
         let subscription = subscribe(nil, channels, &accepted, 0, nil)?.takeRetainedValue()
-        guard let channels = accepted?.takeRetainedValue(), let subscription,
-              let report = samples(subscription, channels, nil)?.takeRetainedValue() as NSDictionary?,
+        guard let channels = accepted?.takeRetainedValue(), let subscription else { return nil }
+        return Subscription(handle: subscription, channels: channels)
+    }
+
+    func sample(_ subscription: Subscription) -> GPUEnergyReading? {
+        guard let report = samples(subscription.handle, subscription.channels, nil)?.takeRetainedValue() as NSDictionary?,
               let entries = report["IOReportChannels"] as? NSArray else { return nil }
         var reading: GPUEnergyReading?
         for row in entries {

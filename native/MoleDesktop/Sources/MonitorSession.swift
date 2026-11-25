@@ -3,6 +3,7 @@ import Foundation
 
 private actor StatusSampler {
     private var readings: StatusReadings
+    private let hardware = HardwareSampler()
 
     init(history: ResourceTrend) {
         readings = StatusReadings(history: history)
@@ -10,7 +11,7 @@ private actor StatusSampler {
 
     func sample() throws -> StatusReadings {
         try Task.checkCancellation()
-        readings.sample()
+        readings.sample(hardware: hardware)
         return readings
     }
 }
@@ -57,7 +58,7 @@ final class MonitorSession: ObservableObject {
         processTask = poll(every: 3_000_000_000) { [weak self] in
             let result = try await process.sample()
             try Task.checkCancellation()
-            self?.didSampleProcesses = true
+            if self?.didSampleProcesses == false { self?.didSampleProcesses = true }
             self?.processes = result
         }
     }

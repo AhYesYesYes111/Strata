@@ -31,7 +31,7 @@ private struct InstalledApplication: Identifiable {
     var id: URL { url }
 }
 
-private enum ApplicationSize {
+enum ApplicationSize: Equatable, Sendable {
     case measured(Int64), unavailable
 
     var text: String {
@@ -39,6 +39,61 @@ private enum ApplicationSize {
         case .measured(let bytes): return storageSize(bytes)
         case .unavailable: return "—"
         }
+    }
+}
+
+// A list refresh gets a fresh cache. Limit concurrent walks even while scrolling
+// quickly through the lazy stack, and share completed measurements across filters.
+@MainActor final class ApplicationSizes: ObservableObject {
+    @Published private(set) var measured: [URL: ApplicationSize] = [:]
+    private var measuring: [URL: Task<Void, Never>] = [:]
+    private var waiting: [URL] = []
+    private var closed = false
+    private let measure: @Sendable (URL) async throws -> Int64?
+
+    init(measure: @escaping @Sendable (URL) async throws -> Int64? = { try await DiskScanner.allocatedDirectorySize($0) }) {
+        self.measure = measure
+    }
+
+    func request(_ url: URL) {
+        guard !closed, measured[url] == nil, measuring[url] == nil, !waiting.contains(url) else { return }
+        waiting.append(url)
+        startNext()
+    }
+
+    func hide(_ url: URL) {
+        // Finish a walk already in progress so a quick return shares that work.
+        waiting.removeAll { $0 == url }
+    }
+
+    private func startNext() {
+        guard measuring.count < 3, !waiting.isEmpty else { return }
+        let url = waiting.removeFirst()
+        measuring[url] = Task {
+            let bytes = try? await measure(url)
+            guard !Task.isCancelled else { return }
+            measured[url] = bytes.map(ApplicationSize.measured) ?? .unavailable
+            measuring[url] = nil
+            startNext()
+        }
+    }
+
+    func close() {
+        closed = true
+        waiting.removeAll()
+        for job in measuring.values { job.cancel() }
+        measuring.removeAll()
+    }
+}
+
+private struct ApplicationSizeLabel: View {
+    let url: URL
+    @ObservedObject var sizes: ApplicationSizes
+
+    var body: some View {
+        Text(verbatim: sizes.measured[url]?.text ?? "…")
+            .onAppear { sizes.request(url) }
+            .onDisappear { sizes.hide(url) }
     }
 }
 
@@ -95,10 +150,10 @@ private struct AppInventory {
     }
 }
 
-struct SoftwarePage: View {
+@MainActor struct SoftwarePage: View {
     @Environment(\.locale) private var locale
     @State private var inventory: AppInventory?
-    @State private var sizes: [URL: ApplicationSize] = [:]
+    @State private var sizes = ApplicationSizes()
     @State private var search = ""
     @State private var location: ApplicationLocation?
     @State private var generation = 0
@@ -166,7 +221,8 @@ struct SoftwarePage: View {
                                     Text(verbatim: app.version ?? "—").font(.caption.monospacedDigit())
                                         .lineLimit(1).truncationMode(.middle).foregroundStyle(StrataColor.muted)
                                         .frame(width: 100, alignment: .leading)
-                                    Text(verbatim: sizes[app.url]?.text ?? "…")
+                                    ApplicationSizeLabel(url: app.url, sizes: sizes)
+                                        .id(ObjectIdentifier(sizes))
                                         .font(.caption.monospacedDigit()).foregroundStyle(StrataColor.muted)
                                         .frame(width: 78, alignment: .trailing)
                                         .help(tr("应用包占用的磁盘空间", "Disk space used by the app bundle"))
@@ -189,22 +245,11 @@ struct SoftwarePage: View {
         }
         .task(id: generation) {
             inventory = nil
-            sizes = [:]
+            sizes.close()
+            sizes = ApplicationSizes()
             guard let result = try? await AppInventory.scan(), !Task.isCancelled else { return }
             inventory = result
-            await withTaskGroup(of: (URL, Int64?).self) { group in
-                var apps = result.apps.makeIterator()
-                func enqueueNext() {
-                    guard let url = apps.next()?.url else { return }
-                    _ = group.addTaskUnlessCancelled { (url, try? await DiskScanner.allocatedDirectorySize(url)) }
-                }
-                for _ in 0..<3 { enqueueNext() }
-                for await (url, bytes) in group {
-                    guard !Task.isCancelled else { return }
-                    sizes[url] = bytes.map(ApplicationSize.measured) ?? .unavailable
-                    enqueueNext()
-                }
-            }
         }
+        .onDisappear { sizes.close() }
     }
 }

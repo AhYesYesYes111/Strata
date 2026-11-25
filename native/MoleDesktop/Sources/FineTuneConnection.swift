@@ -6,7 +6,7 @@ enum FineTuneKind: String, Encodable {
     case input, output, app
 }
 
-struct FineTuneDevice: Decodable, Identifiable {
+struct FineTuneDevice: Decodable, Identifiable, Equatable {
     let id: String
     let name: String
     let volume: Double
@@ -16,7 +16,7 @@ struct FineTuneDevice: Decodable, Identifiable {
     let canMute: Bool
 }
 
-struct FineTuneAudioApp: Decodable, Identifiable {
+struct FineTuneAudioApp: Decodable, Identifiable, Equatable {
     let id: String
     let name: String
     let volume: Double
@@ -30,7 +30,7 @@ struct FineTuneAudioApp: Decodable, Identifiable {
     var isActive: Bool?
 }
 
-private struct MixerSnapshot: Decodable {
+private struct MixerSnapshot: Decodable, Equatable {
     let clientID: String
     let processID: Int32
     let outputs: [FineTuneDevice]
@@ -68,6 +68,7 @@ final class FineTuneConnection: NSObject, ObservableObject {
     private var peer: NSRunningApplication?
     private var peerLacksVisibilityFilter = false
     private var heartbeat: Task<Void, Never>?
+    private var socketDirectory: MixerSocketDirectory?
     private var runningAppsObservation: AnyCancellable?
     private var started = false
     private var showing = false
@@ -116,10 +117,8 @@ final class FineTuneConnection: NSObject, ObservableObject {
     }
 
     func start() {
-        guard !started else { return }
+        guard #available(macOS 15.4, *), !started else { return }
         started = true
-        // Discover currently visible changes immediately. Some LSUIElement
-        // launches do not emit KVO updates, so the heartbeat also checks.
         runningAppsObservation = NSWorkspace.shared.publisher(for: \.runningApplications, options: [.new])
             .map { apps in
                 apps.filter { Self.identifiers.contains($0.bundleIdentifier ?? "") }
@@ -131,12 +130,17 @@ final class FineTuneConnection: NSObject, ObservableObject {
         beat()
     }
 
-    private func startHeartbeat() {
+    private func updateHeartbeat(required: Bool) {
+        if !required {
+            heartbeat?.cancel()
+            heartbeat = nil
+            return
+        }
         guard heartbeat == nil else { return }
         heartbeat = Task { [weak self] in
             while !Task.isCancelled {
                 let idle = self?.peer == nil && self?.showing == false
-                do { try await Task.sleep(nanoseconds: idle ? 3_000_000_000 : 2_000_000_000) } catch { return }
+                do { try await Task.sleep(for: .seconds(idle ? 3 : 2), tolerance: .milliseconds(100)) } catch { return }
                 self?.beat()
             }
         }
@@ -146,6 +150,7 @@ final class FineTuneConnection: NSObject, ObservableObject {
         started = false
         heartbeat?.cancel()
         heartbeat = nil
+        socketDirectory = nil
         pending.removeAll()
         send("detach")
         runningAppsObservation = nil
@@ -163,13 +168,20 @@ final class FineTuneConnection: NSObject, ObservableObject {
             }
         } else {
             send("unsubscribe")
-            send("presence")
+            beat()
         }
     }
 
     private func beat() {
         guard #available(macOS 15.4, *), started else { return }
-        startHeartbeat()
+        if socketDirectory == nil {
+            socketDirectory = MixerSocketDirectory(path: FineTuneSocket.directory) { [weak self] replaced in
+                if replaced { self?.socketDirectory = nil }
+                self?.beat()
+            }
+        }
+        var needsHeartbeat = true
+        defer { updateHeartbeat(required: needsHeartbeat) }
         if peer == nil || peer?.isTerminated == true {
             if let dead = peer, awaitingStartupPID == dead.processIdentifier { update(.launchFailed) }
             awaitingStartupPID = nil
@@ -179,6 +191,11 @@ final class FineTuneConnection: NSObject, ObservableObject {
                 .filter { !$0.isTerminated }
             peer = running.first { $0.bundleURL.map(Self.supportsBridge) == true }
             if peer == nil {
+                // The socket can arrive before Launch Services registers the agent.
+                // Keep retrying while that live endpoint is unaccounted for.
+                if !showing, let socketDirectory {
+                    needsHeartbeat = socketDirectory.hasPendingPeer(identifiers: Self.identifiers)
+                }
                 if !running.isEmpty { update(.incompatible) }
                 else if availability != .opening && availability != .failed && availability != .launchFailed {
                     if showing { update(companionURL() == nil ? .missing : .ready) }
@@ -220,7 +237,7 @@ final class FineTuneConnection: NSObject, ObservableObject {
             return
         }
         lastResponse = ProcessInfo.processInfo.systemUptime
-        snapshot = value
+        if snapshot != value { snapshot = value }
         attemptedAutomaticLaunch = true
         update(.ready)
     }
@@ -363,4 +380,54 @@ final class FineTuneConnection: NSObject, ObservableObject {
               FineTuneSocket.write(data, to: fd, until: deadline) else { return nil }
         return FineTuneSocket.read(fd, limit: FineTuneSocket.responseLimit, until: deadline)
     }
+}
+
+// A menu-bar agent can launch without a runningApplications KVO update. Its
+// bridge socket still appears in this per-user directory. Fall back to the
+// discovery heartbeat if the directory cannot be observed.
+@MainActor
+final class MixerSocketDirectory {
+    private let path: String
+    private let source: DispatchSourceFileSystemObject
+
+    init?(path: String, changed: @escaping @MainActor (_ replaced: Bool) -> Void) {
+        guard !path.isEmpty, mkdir(path, 0o700) == 0 || errno == EEXIST else { return nil }
+        let fd = Darwin.open(path, O_EVTONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else {
+            close(fd)
+            return nil
+        }
+        self.path = path
+        source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd, eventMask: [.write, .delete, .rename, .revoke], queue: .main)
+        // Reconcile once the kernel watch is active, in case a launch raced setup.
+        source.setRegistrationHandler { [weak self] in
+            if self != nil { changed(false) }
+        }
+        source.setEventHandler { [weak self] in
+            guard let events = self?.source.data else { return }
+            changed(!events.intersection([.delete, .rename, .revoke]).isEmpty)
+        }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+    }
+
+    func hasPendingPeer(identifiers: [String]) -> Bool {
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: path) else { return true }
+        return entries.contains { name in
+            guard name.hasPrefix("v2-"), let pid = pid_t(name.dropFirst(3)), pid > 0,
+                  kill(pid, 0) == 0 else { return false }
+            var info = stat()
+            guard lstat(path + "/" + name, &info) == 0, info.st_mode & S_IFMT == S_IFSOCK else { return false }
+            // A stale socket may refer to a PID since reused by a different app.
+            if let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier {
+                return identifiers.contains(id)
+            }
+            return true
+        }
+    }
+
+    deinit { source.cancel() }
 }

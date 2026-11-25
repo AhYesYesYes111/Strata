@@ -12,7 +12,7 @@ final class PreviewModel: ObservableObject {
     @Published private(set) var report: CleanupReport?
     @Published private var failure: ReportText?
     var message: String? { failure?.value }
-    @Published private(set) var volume = VolumeReading.read()
+    @Published private(set) var volume: VolumeReading?
     @Published private(set) var startedAt: Date?
     @Published private(set) var finishedAt: Date?
     private var work: Task<Void, Never>?
@@ -31,7 +31,9 @@ final class PreviewModel: ObservableObject {
 
     init(kind: PreviewKind) { self.kind = kind }
 
-    func refreshVolume() { volume = VolumeReading.read() }
+    func refreshVolume() {
+        if kind == .clean { volume = VolumeReading.read() }
+    }
     func start() { run(approval: nil) }
 
     func applyAfterConfirmation() {
@@ -53,7 +55,7 @@ final class PreviewModel: ObservableObject {
         didClean = false
         report = nil
         failure = nil
-        volume = VolumeReading.read()
+        refreshVolume()
         let progress: @Sendable (String) -> Void = { [weak self] section in
             Task { @MainActor in
                 guard let self, self.running, self.generation == ticket else { return }
@@ -69,7 +71,7 @@ final class PreviewModel: ObservableObject {
                 running = false
                 applying = false
                 work = nil
-                volume = VolumeReading.read()
+                refreshVolume()
             }
             do {
                 if let plan = approval?.plan {

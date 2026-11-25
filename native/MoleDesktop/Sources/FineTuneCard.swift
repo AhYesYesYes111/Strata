@@ -305,6 +305,7 @@ private struct MixerVolume: View {
     let name: String
     let change: (Double) -> Void
     @State private var dragValue: Double?
+    @State private var hovering = false
 
     private var slider: Binding<Double> {
         Binding(get: { dragValue ?? value }, set: { newValue in
@@ -323,7 +324,10 @@ private struct MixerVolume: View {
                 dragValue = editing ? value : nil
             })
                 .controlSize(.small).tint(sky)
+                .background(VolumeWheelTarget(hovered: hovering && dragValue == nil, volume: value, change: change))
+                .onHover { hovering = $0 }
                 .accessibilityLabel(name + " · " + tr("音量", "Volume"))
+                .help(tr("滚轮微调音量", "Scroll to fine-tune volume"))
             Text((dragValue ?? value).formatted(.percent.precision(.fractionLength(0))))
                 .font(.system(size: 10)).monospacedDigit()
                 .foregroundStyle(StrataColor.muted)

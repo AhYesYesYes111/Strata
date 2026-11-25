@@ -101,13 +101,23 @@ final class StrataMenuBar: NSObject, NSPopoverDelegate {
             return
         }
         let screenHeight = (button.window?.screen ?? NSScreen.main)?.visibleFrame.height ?? 780
-        let view = MenuPopoverView(maximumHeight: max(180, screenHeight - 24)) { [weak self] in
+        let view = MenuPopoverView(maximumHeight: max(180, screenHeight - 24), resize: { [weak self] size in
+            self?.resizePopover(to: size)
+        }) { [weak self] in
             self?.popover.performClose(nil)
             self?.onOpenStatus()
         }
-        popover.contentViewController = NSHostingController(rootView: view)
+        let controller = NSHostingController(rootView: view)
+        popover.contentViewController = controller
+        resizePopover(to: controller.view.fittingSize)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
+    }
+
+    private func resizePopover(to size: CGSize) {
+        let size = NSSize(width: ceil(size.width), height: ceil(size.height))
+        guard size.width > 0, size.height > 0, popover.contentSize != size else { return }
+        popover.contentSize = size
     }
 
     func popoverWillShow(_ notification: Notification) {
@@ -124,28 +134,18 @@ final class StrataMenuBar: NSObject, NSPopoverDelegate {
     }
 }
 
-private struct MenuContentHeight: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
 private struct MenuPopoverView: View {
     let maximumHeight: CGFloat
+    let resize: (CGSize) -> Void
     let onOpenStatus: () -> Void
     @ObservedObject private var monitor = MonitorSession.shared
     @AppStorage(AppLanguage.key) private var language: AppLanguage = .system
-    @State private var contentHeight: CGFloat = 740
 
     var body: some View {
-        ScrollView {
+        MenuViewport(maximumHeight: maximumHeight, resize: resize) {
             MenuDashboard(readings: monitor.readings,
                           onOpenStatus: onOpenStatus, onQuit: { NSApp.terminate(nil) })
-                .background(GeometryReader { geometry in
-                    Color.clear.preference(key: MenuContentHeight.self, value: geometry.size.height)
-                })
         }
-        .frame(width: 352, height: min(contentHeight, maximumHeight))
-        .onPreferenceChange(MenuContentHeight.self) { if $0 > 0 { contentHeight = ceil($0) } }
         .background(LinearGradient(colors: [StrataColor.rail, StrataColor.paper],
                                    startPoint: .topLeading, endPoint: .bottomTrailing))
         .environment(\.locale, language.locale)

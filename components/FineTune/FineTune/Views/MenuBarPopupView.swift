@@ -46,9 +46,6 @@ struct MenuBarPopupView: View {
     /// Debounce EQ toggle to prevent rapid clicks during animation
     @State private var isEQAnimating = false
 
-    /// Track popup visibility to pause VU meter polling when hidden
-    @State private var isPopupVisible = true
-
     /// Error message shown when AutoEQ profile import fails
     @State private var autoEQImportError: String?
     /// Task that auto-clears the import error after 3 seconds
@@ -227,7 +224,6 @@ struct MenuBarPopupView: View {
             guard let window = notification.object as? NSWindow,
                   String(describing: type(of: window)).contains("FluidMenuBarExtra")
             else { return }
-            isPopupVisible = true
             popupVisibility.isVisible = true
             audioEngine.bluetoothDeviceMonitor.refresh()
             syncNavOrder()
@@ -240,7 +236,6 @@ struct MenuBarPopupView: View {
             guard let window = notification.object as? NSWindow,
                   String(describing: type(of: window)).contains("FluidMenuBarExtra")
             else { return }
-            isPopupVisible = false
             popupVisibility.isVisible = false
             hasKeyboardEngaged = false
             selectedRow = nil
@@ -900,7 +895,7 @@ struct MenuBarPopupView: View {
                     audioEngine.setBoost(for: app, to: boost)
                 },
                 getAudioLevel: { audioEngine.getAudioLevel(for: app) },
-                isPopupVisible: isPopupVisible,
+                isPopupVisible: popupVisibility.isVisible,
                 onVolumeChange: { volume in
                     audioEngine.setVolume(for: app, to: volume)
                 },

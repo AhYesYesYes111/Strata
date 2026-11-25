@@ -151,25 +151,25 @@ enum DiskScanner {
 
     static func scan(_ root: URL, wholeDisk: Bool = false, selectedFolder: URL? = nil,
                      privacy: DiskScanPrivacy = DiskScanPrivacy(),
-                     onInventory: @escaping @Sendable (DiskScanResult) -> Void = { _ in },
-                     onDirectory: @escaping @Sendable (String) -> Void = { _ in }) async throws -> DiskScanResult {
+                     onInventory: (@Sendable (DiskScanResult) -> Void)? = nil,
+                     onDirectory: (@Sendable (String) -> Void)? = nil) async throws -> DiskScanResult {
         try await walk(root, wholeDisk: wholeDisk, selectedFolder: selectedFolder, privacy: privacy,
-                       onInventory: onInventory, onDirectory: onDirectory).result
+                       sizeOnly: false, onInventory: onInventory, onDirectory: onDirectory).result
     }
 
     static func allocatedDirectorySize(_ root: URL) async throws -> Int64? {
         let (result, rootBytes) = try await walk(root, wholeDisk: false, selectedFolder: nil,
-                                                 privacy: DiskScanPrivacy(), onInventory: { _ in }, onDirectory: { _ in })
+                                                 privacy: DiskScanPrivacy(), sizeOnly: true, onInventory: nil, onDirectory: nil)
         return result.isPartial ? nil : rootBytes + result.totalBytes
     }
 
     private static func walk(_ root: URL, wholeDisk: Bool, selectedFolder: URL?, privacy: DiskScanPrivacy,
-                             onInventory: @escaping @Sendable (DiskScanResult) -> Void,
-                             onDirectory: @escaping @Sendable (String) -> Void) async throws -> (result: DiskScanResult, rootBytes: Int64) {
+                             sizeOnly: Bool, onInventory: (@Sendable (DiskScanResult) -> Void)?,
+                             onDirectory: (@Sendable (String) -> Void)?) async throws -> (result: DiskScanResult, rootBytes: Int64) {
         let worker = Task.detached(priority: .utility) {
             guard !privacy.needsSelection(root, selectedFolder: selectedFolder) else { throw DiskScanAccessError.selectFolder }
             let walker = FolderWalk(root: root, wholeDisk: wholeDisk, privacy: privacy)
-            let result = try walker.scan(onInventory: onInventory, onDirectory: onDirectory)
+            let result = try walker.scan(sizeOnly: sizeOnly, onInventory: onInventory, onDirectory: onDirectory)
             return (result, walker.rootBytes)
         }
         return try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
@@ -218,11 +218,12 @@ private final class DirectoryWalk {
     var frames: [DirectoryFrame]
     var bytes: Int64
     var partial = false
-    var immediate: [DiskEntry]? = []
+    var immediate: [DiskEntry]?
     var localBytes: Int64 = 0
     var localLinks = Set<FileIdentity>()
 
-    init(index: Int, frame: DirectoryFrame, bytes: Int64) {
+    init(index: Int, frame: DirectoryFrame, bytes: Int64, cacheChildren: Bool) {
+        self.immediate = cacheChildren ? [] : nil
         self.index = index
         self.frames = [frame]
         self.bytes = bytes
@@ -254,7 +255,7 @@ private final class FolderWalk {
         self.remaining = wholeDisk ? 6_000_000 : 200_000
     }
 
-    func scan(onInventory: (DiskScanResult) -> Void, onDirectory: (String) -> Void) throws -> DiskScanResult {
+    func scan(sizeOnly: Bool, onInventory: ((DiskScanResult) -> Void)?, onDirectory: ((String) -> Void)?) throws -> DiskScanResult {
         try Task.checkCancellation()
         guard root.isFileURL else { throw CocoaError(.fileReadUnsupportedScheme) }
         var rootInfo = stat()
@@ -290,10 +291,12 @@ private final class FolderWalk {
             queue.sort { (priority[entries[$0].name, default: 7], entries[$0].name) <
                          (priority[entries[$1].name, default: 7], entries[$1].name) }
         }
-        // A tile keeps its color as its live size changes its rank.
-        let paletteOrder = queue + entries.indices.filter { identities[$0] == nil }
-        for (color, index) in paletteOrder.enumerated() { entries[index].tileColorIndex = color }
-        onInventory(snapshot(pending: queue.count, finished: false))
+        if !sizeOnly {
+            // A tile keeps its color as its live size changes its rank.
+            let paletteOrder = queue + entries.indices.filter { identities[$0] == nil }
+            for (color, index) in paletteOrder.enumerated() { entries[index].tileColorIndex = color }
+            onInventory?(snapshot(pending: queue.count, finished: false))
+        }
         var next = 0
         var active: [DirectoryWalk] = []
         var nextUpdate = DispatchTime.now()
@@ -305,7 +308,7 @@ private final class FolderWalk {
                 let entry = entries[index]
                 if let frame = DirectoryFrame(fd: openat(rootFrame.fd, entry.name, flags),
                                               url: entry.url, privacy: privacy, expected: identities[index]) {
-                    active.append(DirectoryWalk(index: index, frame: frame, bytes: entry.bytes))
+                    active.append(DirectoryWalk(index: index, frame: frame, bytes: entry.bytes, cacheChildren: !sizeOnly))
                 }
             }
             for task in active where withinBudget {
@@ -320,13 +323,17 @@ private final class FolderWalk {
                 }
             }
             active.removeAll(where: { $0.frames.isEmpty })
-            if DispatchTime.now() >= nextUpdate {
-                if let first = active.first { onDirectory(entries[first.index].name) }
-                onInventory(snapshot(pending: active.count + queue.count - next, finished: false))
+            if (onInventory != nil || onDirectory != nil) && DispatchTime.now() >= nextUpdate {
+                if let first = active.first { onDirectory?(entries[first.index].name) }
+                onInventory?(snapshot(pending: active.count + queue.count - next, finished: false))
                 nextUpdate = .now() + .milliseconds(350)
             }
         }
         try Task.checkCancellation()
+        if sizeOnly {
+            // The applications list only reads the total and completeness.
+            return DiskScanResult(root: root, entries: entries, isPartial: partial || entries.contains(where: \.isPartial))
+        }
         return snapshot(pending: 0, finished: true)
     }
 
@@ -449,7 +456,19 @@ private final class FolderWalk {
     }
 
     private func sorted(_ list: [DiskEntry]) -> [DiskEntry] {
-        list.sorted { $0.bytes == $1.bytes ? $0.name < $1.name : $0.bytes > $1.bytes }
+        guard list.count > 1 else { return list }
+        // Many files share an allocation size. Reuse each URL's name across ties.
+        var names = [String?](repeating: nil, count: list.count)
+        func name(at index: Int) -> String {
+            if let name = names[index] { return name }
+            let name = list[index].name
+            names[index] = name
+            return name
+        }
+        return list.indices.sorted { first, second in
+            let left = list[first].bytes, right = list[second].bytes
+            return left == right ? name(at: first) < name(at: second) : left > right
+        }.map { list[$0] }
     }
 
     private func snapshot(pending: Int, finished: Bool) -> DiskScanResult {

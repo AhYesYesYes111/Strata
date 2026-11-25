@@ -80,6 +80,7 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
     private var processListenerBlocks: [AudioObjectID: AudioObjectPropertyListenerBlock] = [:]
     private var monitoredProcesses: Set<AudioObjectID> = []
     private var periodicRefreshTask: Task<Void, Never>?
+    private var pendingRefresh: Task<Void, Never>?
 
     private var processListAddress = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyProcessObjectList,
@@ -147,10 +148,8 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
         logger.debug("Starting audio process monitor")
 
         // Set up listener first
-        processListListenerBlock = { [weak self] numberAddresses, addresses in
-            Task { @MainActor [weak self] in
-                self?.refresh()
-            }
+        processListListenerBlock = { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.scheduleRefresh() }
         }
 
         let status = AudioObjectAddPropertyListenerBlock(
@@ -177,6 +176,8 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
 
         periodicRefreshTask?.cancel()
         periodicRefreshTask = nil
+        pendingRefresh?.cancel()
+        pendingRefresh = nil
 
         // Remove process list listener
         if let block = processListListenerBlock {
@@ -186,6 +187,17 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
 
         // Remove all per-process listeners
         removeAllProcessListeners()
+    }
+
+    /// HAL delivers both listener types on the main queue. A burst of changes
+    /// needs only one read of the current process list.
+    private func scheduleRefresh() {
+        guard processListListenerBlock != nil, pendingRefresh == nil else { return }
+        pendingRefresh = Task { @MainActor [weak self] in
+            guard !Task.isCancelled, let self else { return }
+            self.pendingRefresh = nil
+            self.refresh()
+        }
     }
 
     private func startPeriodicRefresh() {
@@ -204,9 +216,8 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
     private func refresh() {
         do {
             let processIDs = try AudioObjectID.readProcessList()
-            let runningApps = NSWorkspace.shared.runningApplications
-            let runningAppsByPID = Dictionary(
-                runningApps.map { ($0.processIdentifier, $0) },
+            lazy var runningAppsByPID = Dictionary(
+                NSWorkspace.shared.runningApplications.map { ($0.processIdentifier, $0) },
                 uniquingKeysWith: { _, latest in latest }
             )
             let myPID = ProcessInfo.processInfo.processIdentifier
@@ -214,8 +225,8 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
             var appsByPID: [pid_t: AudioApp] = [:]
 
             for objectID in processIDs {
-                guard let pid = try? objectID.readProcessPID(), pid != myPID else { continue }
                 guard objectID.readProcessIsRunning() else { continue }
+                guard let pid = try? objectID.readProcessPID(), pid != myPID else { continue }
 
                 // Try to find the parent app (for helper processes like Safari Graphics and Media)
                 let directApp = runningAppsByPID[pid]
@@ -227,13 +238,9 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
                 let isHelper = parentPID != pid
 
                 // Use resolved app's info, fall back to Core Audio bundle ID
-                let name = resolvedApp?.localizedName
-                    ?? objectID.readProcessBundleID()?.components(separatedBy: ".").last
-                    ?? "Unknown"
-                let icon = resolvedApp?.icon
-                    ?? NSImage(systemSymbolName: "app.fill", accessibilityDescription: nil)
-                    ?? NSImage()
-                let bundleID = resolvedApp?.bundleIdentifier ?? objectID.readProcessBundleID()
+                lazy var processBundleID = objectID.readProcessBundleID()
+                let name = resolvedApp?.localizedName ?? processBundleID?.components(separatedBy: ".").last ?? "Unknown"
+                let bundleID = resolvedApp?.bundleIdentifier ?? processBundleID
 
                 // Skip system daemons (siri, coreaudio, etc.) - they shouldn't appear in the apps list
                 if isSystemDaemon(bundleID: bundleID, name: name) { continue }
@@ -254,6 +261,9 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
                         )
                     }
                 } else {
+                    let icon = resolvedApp?.icon
+                        ?? NSImage(systemSymbolName: "app.fill", accessibilityDescription: nil)
+                        ?? NSImage()
                     appsByPID[parentPID] = AudioApp(
                         id: parentPID,
                         processObjectIDs: [objectID],
@@ -310,9 +320,7 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
         )
 
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            Task { @MainActor [weak self] in
-                self?.refresh()
-            }
+            MainActor.assumeIsolated { self?.scheduleRefresh() }
         }
 
         let status = AudioObjectAddPropertyListenerBlock(objectID, &address, .main, block)

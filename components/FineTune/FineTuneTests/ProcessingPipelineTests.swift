@@ -404,6 +404,30 @@ struct BufferMappingTests {
 @Suite("ProcessTapController — Volume Ramp")
 struct VolumeRampTests {
 
+    @Test("A settled ramp retains its rounded gain during fades")
+    func settledGainDuringFade() {
+        let input = TestABL(buffers: [(channels: 2, frames: 17)])
+        let output = TestABL(buffers: [(channels: 2, frames: 18)])
+        let target: Float = 0.75
+        let settled = target.nextDown
+        let fade: Float = 0.5
+        let gate: Float = 0.875
+        var volume = settled
+        fill(input, bufferIndex: 0, value: -0.8)
+        fill(output, bufferIndex: 0, value: 1)
+
+        processWithDefaults(input: input, output: output, targetVol: target,
+                            crossfadeMultiplier: fade, outputGateMultiplier: gate,
+                            rampCoefficient: 0.01, currentVol: &volume)
+
+        #expect(volume == settled)
+        for index in 0..<input.sampleCount(at: 0) {
+            #expect(output.data(at: 0)[index] == -0.8 * (settled * fade * gate))
+        }
+        #expect(output.data(at: 0)[34] == 0)
+        #expect(output.data(at: 0)[35] == 0)
+    }
+
     @Test("Ramp converges toward target from below")
     func convergenceFromBelow() {
         let frames = 4096

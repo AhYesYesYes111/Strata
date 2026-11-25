@@ -1,4 +1,5 @@
 // FineTune/Audio/Engine/ProcessTapController.swift
+import Accelerate
 import AudioToolbox
 import Foundation
 import os
@@ -1378,12 +1379,25 @@ final class ProcessTapController: ProcessTapControlling {
 
             if inputChannels == outputChannels {
                 let sampleCount = frameCount * inputChannels
-                for frame in 0..<frameCount {
-                    currentVol += (targetVol - currentVol) * rampCoefficient
-                    let gain = currentVol * crossfadeMultiplier * outputGateMultiplier
-                    let base = frame * inputChannels
-                    for ch in 0..<inputChannels {
-                        outputSamples[base + ch] = inputSamples[base + ch] * gain
+                // At a Float fixed point every frame gets exactly the same
+                // gain, even if the ramp stopped just short of targetVol.
+                let nextVol = currentVol + (targetVol - currentVol) * rampCoefficient
+                if nextVol == currentVol {
+                    currentVol = nextVol
+                    var gain = nextVol * crossfadeMultiplier * outputGateMultiplier
+                    if gain == 1 {
+                        memmove(outputSamples, inputSamples, sampleCount * MemoryLayout<Float>.size)
+                    } else {
+                        vDSP_vsmul(inputSamples, 1, &gain, outputSamples, 1, vDSP_Length(sampleCount))
+                    }
+                } else {
+                    for frame in 0..<frameCount {
+                        currentVol += (targetVol - currentVol) * rampCoefficient
+                        let gain = currentVol * crossfadeMultiplier * outputGateMultiplier
+                        let base = frame * inputChannels
+                        for ch in 0..<inputChannels {
+                            outputSamples[base + ch] = inputSamples[base + ch] * gain
+                        }
                     }
                 }
                 if sampleCount < outputSampleCount {

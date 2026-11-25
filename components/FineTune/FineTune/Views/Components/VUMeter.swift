@@ -12,14 +12,19 @@ struct VUMeter: View {
 
     private let barCount = DesignTokens.Dimensions.vuMeterBarCount
 
+    // Eight bar thresholds spanning -40 dB to 0 dB, in linear gain.
+    private static let thresholds = [Float(-40), -30, -20, -14, -10, -6, -3, 0].map { powf(10, $0 / 20) }
+
     var body: some View {
+        let peakBar = peakLevel > level
+            ? (Self.thresholds.lastIndex(where: { peakLevel >= $0 }) ?? 0)
+            : nil
         VStack(spacing: 1) {
             ForEach((0..<barCount).reversed(), id: \.self) { index in
                 VUMeterBar(
                     index: index,
-                    level: level,
-                    peakLevel: peakLevel,
-                    barCount: barCount,
+                    isLit: level >= Self.thresholds[min(index, Self.thresholds.count - 1)],
+                    isPeakIndicator: index == peakBar,
                     isMuted: isMuted
                 )
             }
@@ -67,39 +72,9 @@ struct VUMeter: View {
 /// Individual bar in the VU meter
 private struct VUMeterBar: View {
     let index: Int
-    let level: Float
-    let peakLevel: Float
-    let barCount: Int
+    let isLit: Bool
+    let isPeakIndicator: Bool
     var isMuted: Bool = false
-
-    /// dB thresholds for 8 bars covering 40dB range
-    /// Matches professional audio meter standards (logarithmic scale)
-    private static let dbThresholds: [Float] = [-40, -30, -20, -14, -10, -6, -3, 0]
-
-    /// Threshold for this bar (0-1) using dB scale
-    /// Converts dB to linear: 10^(dB/20)
-    private var threshold: Float {
-        let db = Self.dbThresholds[min(index, Self.dbThresholds.count - 1)]
-        return powf(10, db / 20)
-    }
-
-    /// Whether this bar should be lit based on current level
-    private var isLit: Bool {
-        level >= threshold
-    }
-
-    /// Whether this bar is the peak indicator
-    private var isPeakIndicator: Bool {
-        // Find which bar the peak level falls into using dB thresholds
-        var peakBarIndex = 0
-        for i in 0..<Self.dbThresholds.count {
-            let thresh = powf(10, Self.dbThresholds[i] / 20)
-            if peakLevel >= thresh {
-                peakBarIndex = i
-            }
-        }
-        return index == peakBarIndex && peakLevel > level
-    }
 
     /// Color for this bar based on its position and mute state
     /// Split: 4 green (0-3), 2 yellow (4-5), 1 orange (6), 1 red (7)

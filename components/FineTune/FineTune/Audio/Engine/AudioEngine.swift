@@ -50,6 +50,7 @@ final class AudioEngine {
     private var lastAutoSwitchOverrideTime: Date?
     private var pendingCleanup: [pid_t: Task<Void, Never>] = [:]  // Grace period for stale tap cleanup
     private var staleCleanupTask: Task<Void, Never>?  // Debounced cleanup scheduling
+    private var healthMonitoringEnabled = false
     private var healthMonitorTask: Task<Void, Never>?  // Periodic tap health monitor
     private var tapRecoveryCooldownUntil: [pid_t: Date] = [:]  // Prevents tap recreation thrashing
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FineTune", category: "AudioEngine")
@@ -307,7 +308,7 @@ final class AudioEngine {
                 if self.permission.status == .authorized {
                     self.processMonitor.start()
                     self.applyPersistedSettings()
-                    self.startHealthMonitor()
+                    self.enableHealthMonitoring()
                     self.logger.info("Audio capture authorized — process monitor started")
                 } else {
                     self.observePermissionGranted()
@@ -575,7 +576,7 @@ final class AudioEngine {
         deviceMonitor.start()
         applyPersistedSettings()
         if permission.status == .authorized {
-            startHealthMonitor()
+            enableHealthMonitoring()
         }
 
         // Restore locked input device if feature is enabled
@@ -587,7 +588,9 @@ final class AudioEngine {
     }
 
     func stop() {
-        stopHealthMonitor()
+        healthMonitoringEnabled = false
+        healthMonitorTask?.cancel()
+        healthMonitorTask = nil
         processMonitor.stop()
         deviceMonitor.stop()
         for task in singleDeviceRoutingTasks.values { task.cancel() }
@@ -1055,6 +1058,7 @@ final class AudioEngine {
             )
             try tap.activate(initial: initial)
             taps[app.id] = tap
+            startHealthMonitorIfNeeded()
 
             // Catalog AutoEQ may not have been cached yet — kick off async resolve.
             if initial.autoEQProfile == nil {
@@ -1216,6 +1220,7 @@ final class AudioEngine {
             )
             try tap.activate(initial: initial)
             taps[app.id] = tap
+            startHealthMonitorIfNeeded()
 
             // Catalog AutoEQ may not have been cached yet — kick off async resolve.
             // Imported profiles always hit the synchronous path above.
@@ -1993,18 +1998,25 @@ final class AudioEngine {
 
     // MARK: - Tap Health Monitor
 
-    /// Starts a periodic health check that recreates unresponsive taps.
-    /// Checks every 2 seconds; after 3 consecutive misses (~6s), the tap is presumed dead.
-    private func startHealthMonitor() {
-        guard healthMonitorTask == nil else { return }
+    private func enableHealthMonitoring() {
+        healthMonitoringEnabled = true
+        startHealthMonitorIfNeeded()
+    }
+
+    /// While taps exist, check every two seconds and recover after three misses.
+    private func startHealthMonitorIfNeeded() {
+        guard healthMonitoringEnabled, !taps.isEmpty, healthMonitorTask == nil else { return }
         healthMonitorTask = Task { @MainActor [weak self] in
             var consecutiveMisses: [pid_t: Int] = [:]
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard !Task.isCancelled, let self else { return }
 
-                // Skip entirely when no taps exist — avoids unnecessary work at idle (#176)
-                guard !self.taps.isEmpty else { continue }
+                // Adding the next tap restarts the timer.
+                guard !self.taps.isEmpty else {
+                    self.healthMonitorTask = nil
+                    return
+                }
 
                 let now = Date()
 
@@ -2046,11 +2058,6 @@ final class AudioEngine {
                 self.tapRecoveryCooldownUntil = self.tapRecoveryCooldownUntil.filter { self.taps[$0.key] != nil }
             }
         }
-    }
-
-    private func stopHealthMonitor() {
-        healthMonitorTask?.cancel()
-        healthMonitorTask = nil
     }
 
     /// Tears down and recreates a tap for a given PID, preserving routing and settings.

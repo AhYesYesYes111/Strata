@@ -1,5 +1,46 @@
 import SwiftUI
 
+private struct MenuViewportSize: NSViewRepresentable {
+    let resize: (CGSize) -> Void
+
+    final class Reader: NSView {
+        var resize: ((CGSize) -> Void)?
+
+        override func setFrameSize(_ newSize: NSSize) {
+            let changed = frame.size != newSize
+            super.setFrameSize(newSize)
+            guard changed else { return }
+            // Resizing the NSPopover starts another AppKit layout pass.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window != nil, self.frame.size == newSize else { return }
+                self.resize?(newSize)
+            }
+        }
+    }
+
+    func makeNSView(context: Context) -> Reader {
+        let reader = Reader()
+        reader.resize = resize
+        return reader
+    }
+
+    func updateNSView(_ reader: Reader, context: Context) { reader.resize = resize }
+}
+
+struct MenuViewport<Content: View>: View {
+    let maximumHeight: CGFloat
+    let resize: (CGSize) -> Void
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        ScrollView { content() }
+            .frame(maxHeight: maximumHeight)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: 352)
+            .background(MenuViewportSize(resize: resize))
+    }
+}
+
 struct MenuDashboard: View {
     let readings: StatusReadings
     let onOpenStatus: () -> Void
