@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1024" height="1024" viewBox="0 0 272 272">
+  <defs>
+    <path id="contour" d="
+      M 105 136
+      C 104 128 109 123 116 121
+      C 125 118 132 120 138 125
+      C 147 131 149 137 147 143
+      C 146 149 138 152 132 157
+      C 127 162 119 166 112 164
+      C 104 163 101 159 102 153
+      C 103 147 106 142 105 136 Z"/>
+    <filter id="shadow" x="-15%" y="-15%" width="140%" height="150%">
+      <feGaussianBlur stdDeviation="2.2"/>
+    </filter>
+    <linearGradient id="face" x1="21%" y1="0%" x2="77%" y2="100%">
+      <stop stop-color="#ffe7bb"/>
+      <stop offset=".6" stop-color="#f5d19d"/>
+      <stop offset="1" stop-color="#dfb587"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="17%" y1="0%" x2="58%" y2="100%">
+      <stop stop-color="#ffffff" stop-opacity=".45"/>
+      <stop offset=".49" stop-color="#ffffff" stop-opacity=".04"/>
+      <stop offset="1" stop-color="#080810" stop-opacity=".24"/>
+    </linearGradient>
+  </defs>
+  <use xlink:href="#contour" transform="translate(0 4.2)" fill="#140e22" opacity=".50" filter="url(#shadow)"/>
+  <use xlink:href="#contour" transform="translate(0 2.1)" fill="#dfb587"/>
+  <use xlink:href="#contour" fill="url(#face)" stroke="url(#rim)" stroke-width=".65"/>
+</svg>

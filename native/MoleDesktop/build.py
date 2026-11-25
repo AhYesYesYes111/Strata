@@ -103,11 +103,11 @@ def build(finetune_app=None, *, without_finetune=False, finetune_packages=None, 
         swift = ["xcrun", "swiftc", "-swift-version", "5", "-target", f"{platform.machine()}-apple-macosx13.0",
                  "-module-cache-path", output / "ModuleCache"]
         run(*swift, "-O", *sorted((project / "Sources").glob("*.swift")), "-o", macos / "Strata")
-        iconset = stage / "Strata.iconset"
-        iconset.mkdir()
-        run(*swift, project / "Sources/ContourMark.swift", project / "Packaging/Icon.swift", "-o", stage / "make-icon")
-        run(stage / "make-icon", iconset)
-        run("iconutil", "-c", "icns", iconset, "-o", resources / "Strata.icns")
+        icon_info = stage / "icon-info.plist"
+        run("xcrun", "actool", project / "Packaging/Strata.icon", "--compile", resources,
+            "--platform", "macosx", "--target-device", "mac", "--minimum-deployment-target", "13.0",
+            "--app-icon", "Strata", "--output-partial-info-plist", icon_info,
+            "--output-format", "human-readable-text", "--warnings", "--errors")
         mole_source = repo / "components/Mole/macos"
         shutil.copy(mole_source / "mole", cli)
         shutil.copytree(mole_source / "lib", cli / "lib", copy_function=shutil.copy)
@@ -119,7 +119,7 @@ def build(finetune_app=None, *, without_finetune=False, finetune_packages=None, 
             helpers.mkdir()
             run("/usr/bin/ditto", "--norsrc", "--noextattr", finetune_app, helpers / "FineTune.app")
         plist = {
-            "CFBundleName": "Strata", "CFBundleDisplayName": "Strata", "CFBundleIconFile": "Strata",
+            "CFBundleName": "Strata", "CFBundleDisplayName": "Strata",
             "CFBundleIdentifier": bundle_id, "CFBundlePackageType": "APPL", "CFBundleExecutable": "Strata",
             "CFBundleShortVersionString": "0.7.0", "CFBundleVersion": "7",
             "CFBundleDevelopmentRegion": "en", "CFBundleLocalizations": ["en", "zh-Hans"],
@@ -128,6 +128,8 @@ def build(finetune_app=None, *, without_finetune=False, finetune_packages=None, 
             "NSPrincipalClass": "NSApplication", "NSHighResolutionCapable": True,
             "NSHumanReadableCopyright": "Includes the Mole CLI by tw93 and contributors. GPL-3.0.",
         }
+        with icon_info.open("rb") as file:
+            plist.update(plistlib.load(file))
         descriptions = {**usage_descriptions, **companion_usage_descriptions} if finetune_app else usage_descriptions
         for index, language in enumerate(plist["CFBundleLocalizations"]):
             localized = {key: values[index] for key, values in descriptions.items()}

@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="face" x1="23%" y1="0%" x2="77%" y2="100%">
+      <stop offset="0" stop-color="#f4f6fa" stop-opacity="1"/>
+      <stop offset="0.25" stop-color="#e5e9ee" stop-opacity="1"/>
+      <stop offset="0.51" stop-color="#d4d9e2" stop-opacity="1"/>
+      <stop offset="0.78" stop-color="#cbd0da" stop-opacity="1"/>
+      <stop offset="1" stop-color="#d6d8e2" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0%" y1="0%" x2="100%" y2="93%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.22" stop-color="#b6becc" stop-opacity="1"/>
+      <stop offset="0.54" stop-color="#6c758b" stop-opacity="1"/>
+      <stop offset="0.79" stop-color="#545d72" stop-opacity="1"/>
+      <stop offset="1" stop-color="#bec4d2" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="3%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.28" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.54" stop-color="#dbe2ed" stop-opacity="0.64"/>
+      <stop offset="0.76" stop-color="#959eae" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#fcfbfe" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="bevel" x1="0%" y1="0%" x2="71%" y2="100%">
+      <stop stop-color="#ffffff" stop-opacity=".86"/>
+      <stop offset=".22" stop-color="#e8efff" stop-opacity=".56"/>
+      <stop offset=".40" stop-color="#ffffff" stop-opacity=".12"/>
+      <stop offset=".56" stop-color="#7e8596" stop-opacity=".40"/>
+      <stop offset=".75" stop-color="#ece6fc" stop-opacity=".30"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity=".75"/>
+    </linearGradient>
+    <linearGradient id="refraction" x1="5%" y1="22%" x2="100%" y2="86%">
+      <stop stop-color="#fcfdff" stop-opacity=".50"/>
+      <stop offset=".27" stop-color="#ffffff" stop-opacity=".08"/>
+      <stop offset=".43" stop-color="#8f9ab0" stop-opacity=".23"/>
+      <stop offset=".65" stop-color="#756f87" stop-opacity=".20"/>
+      <stop offset="1" stop-color="#f5edfa" stop-opacity=".33"/>
+    </linearGradient>
+    <path id="pane" d="
+      M 322.6,446.6
+      C 319.4,399.2 338.4,370.7 379.5,354.9
+      C 417.4,342.3 458.5,336.0 493.3,342.3
+      C 534.4,348.6 566.1,373.9 607.2,402.4
+      C 657.8,437.2 686.2,468.8 683.1,509.9
+      C 679.9,554.2 642.0,582.6 597.7,604.8
+      C 547.1,630.1 521.8,655.4 490.2,683.8
+      C 455.4,715.4 411.1,724.9 360.5,718.6
+      C 319.4,712.3 284.6,693.3 281.4,661.7
+      C 275.1,630.1 294.1,595.3 306.7,554.2
+      C 319.4,516.2 325.7,481.4 322.6,446.6 Z"/>
+    <clipPath id="clip"><use xlink:href="#pane"/></clipPath>
+  </defs>
+  <use xlink:href="#pane" transform="translate(0 10)" fill="url(#edge)" opacity=".17"/>
+  <use xlink:href="#pane" fill="url(#face)" opacity=".40"/>
+  <use xlink:href="#pane" fill="url(#refraction)"/>
+  <g fill="none" clip-path="url(#clip)" stroke="url(#bevel)">
+    <use xlink:href="#pane" stroke-width="26" opacity=".23"/>
+    <use xlink:href="#pane" stroke-width="15" opacity=".44"/>
+    <use xlink:href="#pane" stroke-width="7" opacity=".63"/>
+  </g>
+  <use xlink:href="#pane" fill="none" stroke="url(#rim)" stroke-width="5"/>
+</svg>

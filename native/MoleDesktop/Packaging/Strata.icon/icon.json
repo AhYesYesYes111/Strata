@@ -1,0 +1,290 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "automatic-gradient": "extended-srgb:0.616,0.663,0.788,1"
+      }
+    },
+    {
+      "value": {
+        "automatic-gradient": "extended-srgb:0.060,0.061,0.089,1"
+      },
+      "appearance": "dark"
+    }
+  ],
+  "groups": [
+    {
+      "name": "Summit",
+      "layers": [
+        {
+          "name": "Stone",
+          "image-name": "GlassStone.svg",
+          "fill": "none",
+          "glass": true,
+          "hidden-specializations": [
+            {
+              "value": false
+            },
+            {
+              "appearance": "dark",
+              "value": true
+            }
+          ]
+        },
+        {
+          "name": "Peak",
+          "image-name": "ReliefPeak.svg",
+          "fill": "none",
+          "glass": false,
+          "hidden-specializations": [
+            {
+              "value": true
+            },
+            {
+              "appearance": "dark",
+              "value": false
+            }
+          ]
+        }
+      ],
+      "shadow-specializations": [
+        {
+          "value": {
+            "kind": "neutral",
+            "opacity": 0.34
+          }
+        },
+        {
+          "appearance": "dark",
+          "value": {
+            "kind": "neutral",
+            "opacity": 0.7
+          }
+        }
+      ],
+      "translucency-specializations": [
+        {
+          "value": {
+            "enabled": true,
+            "value": 0.17
+          }
+        },
+        {
+          "appearance": "dark",
+          "value": {
+            "enabled": false,
+            "value": 0.5
+          }
+        }
+      ]
+    },
+    {
+      "name": "Upper terraces",
+      "layers": [
+        {
+          "name": "Crown",
+          "image-name": "GlassCrown.svg",
+          "fill": "none",
+          "glass": true,
+          "hidden-specializations": [
+            {
+              "value": false
+            },
+            {
+              "appearance": "dark",
+              "value": true
+            }
+          ]
+        },
+        {
+          "name": "Crest",
+          "image-name": "ReliefCrest.svg",
+          "fill": "none",
+          "glass": false,
+          "hidden-specializations": [
+            {
+              "value": true
+            },
+            {
+              "appearance": "dark",
+              "value": false
+            }
+          ]
+        },
+        {
+          "name": "Rise",
+          "image-name": "ReliefRise.svg",
+          "fill": "none",
+          "glass": false,
+          "hidden-specializations": [
+            {
+              "value": true
+            },
+            {
+              "appearance": "dark",
+              "value": false
+            }
+          ]
+        }
+      ],
+      "shadow-specializations": [
+        {
+          "value": {
+            "kind": "neutral",
+            "opacity": 0.34
+          }
+        },
+        {
+          "appearance": "dark",
+          "value": {
+            "kind": "neutral",
+            "opacity": 0.7
+          }
+        }
+      ],
+      "translucency-specializations": [
+        {
+          "value": {
+            "enabled": true,
+            "value": 0.43
+          }
+        },
+        {
+          "appearance": "dark",
+          "value": {
+            "enabled": false,
+            "value": 0.5
+          }
+        }
+      ]
+    },
+    {
+      "name": "Lower terraces",
+      "layers": [
+        {
+          "name": "Terrace",
+          "image-name": "GlassTerrace.svg",
+          "fill": "none",
+          "glass": true,
+          "hidden-specializations": [
+            {
+              "value": false
+            },
+            {
+              "appearance": "dark",
+              "value": true
+            }
+          ]
+        },
+        {
+          "name": "Base",
+          "image-name": "GlassBase.svg",
+          "fill": "none",
+          "glass": true,
+          "hidden-specializations": [
+            {
+              "value": false
+            },
+            {
+              "appearance": "dark",
+              "value": true
+            }
+          ]
+        },
+        {
+          "name": "Terrace",
+          "image-name": "ReliefTerrace.svg",
+          "fill": "none",
+          "glass": false,
+          "hidden-specializations": [
+            {
+              "value": true
+            },
+            {
+              "appearance": "dark",
+              "value": false
+            }
+          ]
+        },
+        {
+          "name": "Bedrock",
+          "image-name": "ReliefBedrock.svg",
+          "fill": "none",
+          "glass": false,
+          "hidden-specializations": [
+            {
+              "value": true
+            },
+            {
+              "appearance": "dark",
+              "value": false
+            }
+          ]
+        }
+      ],
+      "shadow-specializations": [
+        {
+          "value": {
+            "kind": "neutral",
+            "opacity": 0.34
+          }
+        },
+        {
+          "appearance": "dark",
+          "value": {
+            "kind": "neutral",
+            "opacity": 0.7
+          }
+        }
+      ],
+      "translucency-specializations": [
+        {
+          "value": {
+            "enabled": true,
+            "value": 0.43
+          }
+        },
+        {
+          "appearance": "dark",
+          "value": {
+            "enabled": false,
+            "value": 0.5
+          }
+        }
+      ]
+    },
+    {
+      "name": "Daylight",
+      "layers": [
+        {
+          "name": "Daylight",
+          "image-name": "GlassDaylight.svg",
+          "fill": "none",
+          "glass": false,
+          "hidden-specializations": [
+            {
+              "value": false
+            },
+            {
+              "appearance": "dark",
+              "value": true
+            }
+          ]
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}
