@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct FineTuneCard: View {
+    let dismissMenu: () -> Void
     @ObservedObject private var audio = FineTuneConnection.shared
     @State private var showInputs = false
     @State private var showInactive = false
@@ -13,11 +14,11 @@ struct FineTuneCard: View {
             HStack(spacing: 6) {
                 if audio.connected {
                     Menu {
-                        Button(action: audio.openMixer) {
+                        Button { openCompanion(audio.openMixer) } label: {
                             Label(tr("打开完整混音器", "Open Full Mixer"), systemImage: "slider.horizontal.3")
                         }
                         if let enabled = audio.outputPriorityEnabled {
-                            Button(action: audio.openEditor) {
+                            Button { openCompanion(audio.openEditor) } label: {
                                 Label(tr("管理设备与应用…", "Manage Devices and Apps…"), systemImage: "pencil")
                             }
                             Divider()
@@ -41,7 +42,7 @@ struct FineTuneCard: View {
                     }
                     .labelsHidden().pickerStyle(.segmented).controlSize(.small)
                     .fixedSize()
-                    Button(action: audio.openSettings) {
+                    Button { openCompanion(audio.openSettings) } label: {
                         Label(tr("设置", "Settings"), systemImage: "gearshape")
                             .font(.system(size: 11, weight: .medium))
                             .frame(minHeight: 22).contentShape(Rectangle())
@@ -63,7 +64,7 @@ struct FineTuneCard: View {
                 Text(tr("应用音量", "App volume")).font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(StrataColor.muted)
                 if !audio.appAudioAuthorized {
-                    Button(action: audio.openMixer) {
+                    Button { openCompanion(audio.openMixer) } label: {
                         Label(tr("打开混音器，授权 FineTune 控制应用音频", "Open the mixer to grant FineTune audio access"),
                               systemImage: "arrow.up.right.square")
                     }
@@ -177,7 +178,9 @@ struct FineTuneCard: View {
                     Toggle(tr("启用均衡器", "Enable equalizer"), isOn: Binding(get: { eqEnabled }, set: {
                         audio.setEQEnabled(appID: app.id, enabled: $0)
                     }))
-                    Button(tr("编辑频段与预设…", "Edit Bands and Presets…")) { audio.openAppEQ(appID: app.id) }
+                    Button(tr("编辑频段与预设…", "Edit Bands and Presets…")) {
+                        openCompanion { audio.openAppEQ(appID: app.id) }
+                    }
                 }
             }
             if let pinned = app.pinned {
@@ -278,6 +281,12 @@ struct FineTuneCard: View {
                     .frame(width: 112, alignment: .trailing)
             }
         }
+    }
+
+    private func openCompanion(_ open: () -> Void) {
+        // Queue the request while the menu is still subscribed to FineTune.
+        open()
+        dismissMenu()
     }
 
     private func note(_ title: String) -> some View {

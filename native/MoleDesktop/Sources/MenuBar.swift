@@ -66,11 +66,22 @@ final class StrataAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
+// A menu-bar control can take keyboard input while the user's app keeps its menu bar.
 @MainActor
-final class StrataMenuBar: NSObject, NSPopoverDelegate {
-    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-    let popover = NSPopover()
+private final class MenuPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+    override func cancelOperation(_ sender: Any?) { close() }
+}
+
+@MainActor
+final class StrataMenuBar: NSObject, NSWindowDelegate {
+    private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    private let panel = MenuPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                                  backing: .buffered, defer: false)
     private let onOpenStatus: () -> Void
+    private var externalClickMonitor: Any?
+    private var localClickMonitor: Any?
 
     init(onOpenStatus: @escaping () -> Void) {
         self.onOpenStatus = onOpenStatus
@@ -89,65 +100,114 @@ final class StrataMenuBar: NSObject, NSPopoverDelegate {
             button.target = self
             button.action = #selector(toggle)
         }
-        popover.behavior = .transient
-        popover.appearance = NSAppearance(named: .darkAqua)
-        popover.delegate = self
+        panel.delegate = self
+        panel.title = "Strata"
+        panel.isReleasedWhenClosed = false
+        panel.level = .statusBar
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        panel.hidesOnDeactivate = false
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.appearance = NSAppearance(named: .darkAqua)
     }
 
     @objc private func toggle() {
-        guard let button = item.button else { return }
-        if popover.isShown {
-            popover.performClose(nil)
+        if panel.isVisible {
+            panel.close()
             return
         }
-        let screenHeight = (button.window?.screen ?? NSScreen.main)?.visibleFrame.height ?? 780
-        let view = MenuPopoverView(maximumHeight: max(180, screenHeight - 24), resize: { [weak self] size in
-            self?.resizePopover(to: size)
-        }) { [weak self] in
-            self?.popover.performClose(nil)
-            self?.onOpenStatus()
-        }
+        guard let screen = item.button?.window?.screen else { return }
+        let view = MenuPopoverView(maximumHeight: max(180, screen.visibleFrame.height - 24), resize: { [weak self] size in
+            self?.positionPanel(contentSize: size)
+        }, dismissMenu: { [weak self] in
+            self?.panel.close()
+        }, onOpenStatus: onOpenStatus)
         let controller = NSHostingController(rootView: view)
-        popover.contentViewController = controller
-        resizePopover(to: controller.view.fittingSize)
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        popover.contentViewController?.view.window?.makeKey()
-    }
-
-    private func resizePopover(to size: CGSize) {
-        let size = NSSize(width: ceil(size.width), height: ceil(size.height))
-        guard size.width > 0, size.height > 0, popover.contentSize != size else { return }
-        popover.contentSize = size
-    }
-
-    func popoverWillShow(_ notification: Notification) {
+        let size = controller.view.fittingSize
+        panel.contentViewController = controller
+        positionPanel(contentSize: size)
+        panel.makeKeyAndOrderFront(nil)
+        item.button?.highlight(true)
         MonitorSession.shared.startMenu()
         FineTuneConnection.shared.setMenuVisible(true)
-        item.button?.highlight(true)
+        observeDismissal()
     }
 
-    func popoverDidClose(_ notification: Notification) {
+    private var buttonFrame: NSRect? {
+        guard let button = item.button, let window = button.window else { return nil }
+        return window.convertToScreen(button.convert(button.bounds, to: nil))
+    }
+
+    private func positionPanel(contentSize: NSSize) {
+        guard contentSize.width > 0, contentSize.height > 0,
+              let anchor = buttonFrame, let screen = item.button?.window?.screen else { return }
+        let visible = screen.visibleFrame
+        let size = NSSize(width: ceil(contentSize.width), height: ceil(contentSize.height))
+        let x = min(max(anchor.midX - size.width / 2, visible.minX), visible.maxX - size.width)
+        let y = max(visible.minY, min(anchor.minY, visible.maxY) - 4 - size.height)
+        let frame = NSRect(origin: NSPoint(x: floor(x), y: floor(y)), size: size)
+        if frame != panel.frame { panel.setFrame(frame, display: true) }
+    }
+
+    private func observeDismissal() {
+        let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        externalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: clicks) { [weak self] event in
+            guard let self else { return }
+            // The system menu bar can forward this same click to the button's
+            // toggle action. Let that action close the panel exactly once.
+            if event.type == .leftMouseDown, self.buttonFrame?.contains(NSEvent.mouseLocation) == true { return }
+            self.panel.close()
+        }
+        // Strata's own workspace window can receive the click while a native
+        // picker menu or the status button should be free to finish tracking.
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: clicks) { [weak self] event in
+            if let self, event.window !== self.item.button?.window, event.window?.canBecomeMain == true {
+                self.panel.close()
+            }
+            return event
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(frontmostApplicationChanged(_:)),
+            name: NSWorkspace.didActivateApplicationNotification, object: nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if let externalClickMonitor { NSEvent.removeMonitor(externalClickMonitor) }
+        if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
+        externalClickMonitor = nil
+        localClickMonitor = nil
+        NSWorkspace.shared.notificationCenter.removeObserver(
+            self, name: NSWorkspace.didActivateApplicationNotification, object: nil)
         MonitorSession.shared.stopMenu()
         FineTuneConnection.shared.setMenuVisible(false)
         item.button?.highlight(false)
-        popover.contentViewController = nil
+        panel.contentViewController = nil
+    }
+
+    @objc private func frontmostApplicationChanged(_ notification: Notification) {
+        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        panel.close()
     }
 }
 
 private struct MenuPopoverView: View {
     let maximumHeight: CGFloat
     let resize: (CGSize) -> Void
+    let dismissMenu: () -> Void
     let onOpenStatus: () -> Void
     @ObservedObject private var monitor = MonitorSession.shared
     @AppStorage(AppLanguage.key) private var language: AppLanguage = .system
 
     var body: some View {
         MenuViewport(maximumHeight: maximumHeight, resize: resize) {
-            MenuDashboard(readings: monitor.readings,
-                          onOpenStatus: onOpenStatus, onQuit: { NSApp.terminate(nil) })
+            MenuDashboard(readings: monitor.readings, dismissMenu: dismissMenu,
+                          onOpenStatus: { dismissMenu(); onOpenStatus() }, onQuit: { NSApp.terminate(nil) })
         }
         .background(LinearGradient(colors: [StrataColor.rail, StrataColor.paper],
                                    startPoint: .topLeading, endPoint: .bottomTrailing))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
         .environment(\.locale, language.locale)
         .preferredColorScheme(.dark)
     }

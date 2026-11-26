@@ -43,6 +43,7 @@ struct MenuViewport<Content: View>: View {
 
 struct MenuDashboard: View {
     let readings: StatusReadings
+    let dismissMenu: () -> Void
     let onOpenStatus: () -> Void
     let onQuit: () -> Void
 
@@ -57,7 +58,7 @@ struct MenuDashboard: View {
                 GridRow { network; fan }
             }
             battery
-            FineTuneCard().menuSurface()
+            FineTuneCard(dismissMenu: dismissMenu).menuSurface()
             HStack {
                 Spacer()
                 Button(action: onQuit) {

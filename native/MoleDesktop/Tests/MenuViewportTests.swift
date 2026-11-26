@@ -4,7 +4,7 @@ import SwiftUI
 @main struct MenuViewportTests {
     @MainActor static func main() {
         _ = NSApplication.shared
-        let menu = MenuDashboard(readings: StatusReadings(), onOpenStatus: {}, onQuit: {})
+        let menu = MenuDashboard(readings: StatusReadings(), dismissMenu: {}, onOpenStatus: {}, onQuit: {})
         let natural = NSHostingController(rootView: menu).view.fittingSize
         let limit = natural.height + 100
 
