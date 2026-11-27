@@ -1,14 +1,78 @@
-# Strata
+<p align="center">
+  <img src="docs/img/strata-icon.png" width="88" height="88" alt="">
+</p>
 
-Strata is a native macOS app that shows where your disk space goes, lets you review cleanup candidates, and tracks system activity in the window and menu bar. Its SwiftUI interface is available in English and Simplified Chinese.
+<h1 align="center">Strata</h1>
 
-[Build Strata](#build-strata) · [Using Strata](#using-strata) · [Mole CLI](#about-the-upstream-mole-cli) · [简体中文](README_CN.md)
+<p align="center"><strong>See where your disk space goes.</strong></p>
 
-![Strata’s Clean view with storage usage and shortcuts to common folders](docs/img/strata-clean-en.png)
+<p align="center">
+  A native macOS app for disk analysis, cleanup previews, live system stats, and per-app audio.
+</p>
 
-## Build Strata
+<p align="center">
+  <strong><a href="https://github.com/AhYesYesYes111/Strata/releases/download/v0.7.0/Strata.zip">Download for macOS</a></strong>
+  · <a href="#install-on-macos">Install</a>
+  · <a href="#build-from-source">Build from source</a>
+  · <a href="README_CN.md">简体中文</a>
+</p>
 
-Strata runs on **macOS 13 or later**. Building from source requires **Python 3** and **a full Xcode installation with the macOS 26 SDK or newer**.
+<p align="center"><sub>Apple silicon · macOS 13+ · Audio controls on macOS 15.4+</sub></p>
+
+<p align="center">
+  <a href="docs/img/strata-clean-en.png">
+    <img src="docs/img/strata-cover-en.webp" width="1440" alt="Strata’s Clean window, showing available storage and folder shortcuts over the app’s contour artwork">
+  </a>
+</p>
+
+## Explore Strata
+
+### Follow the space
+
+Open your startup disk or a folder in **Analyze**. The bigger the tile, the more space it takes. Click a folder to see what’s inside, or reopen your last completed scan and rescan when you need fresh numbers.
+
+<p align="center">
+  <img src="docs/img/strata-analyze-en.webp" width="800" alt="Analyze showing a sample studio archive, with the largest folders occupying the largest tiles">
+</p>
+
+### Review before you clear
+
+**Clean** scans for caches, logs, and app leftovers and estimates how much space you can reclaim. Expand categories to inspect paths, search the report, or export it as text. When you confirm, Strata checks the full cleanup plan again and asks you to review any changes.
+
+> Search filters the report display. Confirming cleanup permanently deletes eligible items and empties your personal Trash by default.
+
+<p align="center">
+  <img src="docs/img/strata-review-en.webp" width="640" alt="Sample cleanup review showing estimated reclaimable space, grouped paths, and a confirmation button">
+</p>
+
+### Check your Mac and mix your audio
+
+**Status** shows CPU, GPU, memory pressure, disk activity, network, and battery. Use the main window to search and sort processes, or click the Strata menu bar icon for a quick look.
+
+The same menu puts **FineTune** within reach. Turn down a single app, route its sound to one or more outputs, or adjust its gain and EQ.
+
+<p align="center">
+  <img src="docs/img/strata-menu-en.webp" width="344" alt="Strata’s menu bar panel with sample hardware readings, output devices, and separate volume sliders for Music and Safari">
+</p>
+
+**Apps** lists installed app versions and bundle sizes, and can reveal apps in Finder. **Maintain** previews maintenance tasks and shows why tasks are skipped. [Desktop guide (简体中文)](native/MoleDesktop/README.md)
+
+## Install on macOS
+
+Download `Strata.zip`, extract it, and move `Strata.app` to **Applications**. The published build runs on Apple silicon with macOS 13 or later. FineTune audio controls require macOS 15.4 or later. [Release notes and SHA-256 checksum](https://github.com/AhYesYesYes111/Strata/releases/tag/v0.7.0)
+
+<details>
+<summary>If macOS blocks the first launch</summary>
+
+The release is ad-hoc signed and ships without Apple notarization. Verify the archive against the checksum in the release notes, then follow Apple’s instructions to open it. [Apple’s first-launch guide](https://support.apple.com/en-us/102445)
+
+</details>
+
+The SwiftUI interface supports English and Simplified Chinese. To measure a protected folder, select it in **Analyze**. **Access** opens Full Disk Access settings when you need them. [Permissions and keyboard shortcuts](native/MoleDesktop/README.md#使用)
+
+## Build from source
+
+Use **Python 3** and a full **Xcode** installation with the **macOS 26 SDK or later**.
 
 ```sh
 git clone https://github.com/AhYesYesYes111/Strata.git
@@ -17,30 +81,12 @@ python3 native/MoleDesktop/build.py
 open native/MoleDesktop/build/Strata.app
 ```
 
-The default build compiles FineTune from this repository, embeds it in the locally signed app, and writes `native/MoleDesktop/build/Strata.zip`. Audio controls require macOS 15.4 or later. Xcode resolves the pinned Swift packages on the first build. Pass `--without-finetune` for a disk-tools-only build.
+The script builds for your Mac’s architecture and writes both `Strata.app` and `Strata.zip` to `native/MoleDesktop/build/`. The default build includes FineTune and resolves pinned Swift packages on the first run. Add `--without-finetune` for a disk-tools-only build.
 
-If the checkout is in a synced folder, the build may direct you to the ZIP. Extract it to a local folder before opening the app, or choose a local build directory with `--output-dir`.
+If a synced checkout makes the build direct you to the ZIP, extract it to a local folder before opening it. You can also set a local output path with `--output-dir`. [Desktop source and tests](native/MoleDesktop)
 
-## Using Strata
+## Credits and license
 
-| View | What you can do |
-| --- | --- |
-| **Analyze** | Open the startup disk or a folder of your choice. Select a tile to see what takes up space inside it, or rescan to refresh the saved result. |
-| **Clean** | Run a preview to estimate reclaimable space from caches, logs, and app leftovers. Search the report or export it as text. |
-| **Status** | Check CPU, memory, disk activity, network, and battery. Search and sort processes, or open the menu bar panel for a quick overview. |
-| **Apps** | Search installed applications, check their versions, and reveal them in Finder. |
-| **Maintain** | Preview system maintenance tasks and see which ones Mole would skip. |
+Strata’s desktop interface is built in SwiftUI. Cleanup and maintenance use **Mole CLI** by tw93 and contributors. Audio controls use **FineTune** by Ronit Singh and contributors. This repository includes FineTune and the macOS, Linux, and Windows editions of Mole CLI. [Component guide](components/README.md) · [Mole](https://github.com/tw93/Mole) · [FineTune](https://github.com/ronitsingh10/FineTune)
 
-> **Review the report before confirming cleanup.** Search only filters the report. When you confirm, Mole scans again and runs a full cleanup using the current protection rules. It permanently removes eligible items and empties your personal Trash by default.
-
-If you need to measure folders protected by macOS, **Access** opens Full Disk Access settings. The desktop guide covers permissions, keyboard shortcuts, report export, and tests. [Strata guide (简体中文)](native/MoleDesktop/README.md) · [Desktop source](native/MoleDesktop/Sources)
-
-## About the upstream Mole CLI
-
-The repository includes the complete FineTune Xcode project and the macOS, Linux, and Windows editions of Mole with their tests and packaging scripts. Run `./mo --help` on macOS or Linux. The Windows entry point is `components/Mole/windows/mole.ps1`. Build instructions for each platform are in the [component guide](components/README.md).
-
-The desktop app bundles cleanup and maintenance scripts from Mole CLI, the terminal tool by tw93 and contributors. The upstream project also publishes its own desktop app, Mole Mac. [Mole CLI source](https://github.com/tw93/Mole) · [Mole Mac](https://mole.fit/)
-
-## License
-
-Strata and the bundled Mole CLI use the GNU General Public License, version 3. [Full license](LICENSE) · [Component credits and trademark policy](LICENSES.md)
+Strata and the bundled Mole scripts are released under **GPLv3**. [Full license](LICENSE) · [Component licenses and credits](LICENSES.md)
